@@ -74,6 +74,8 @@ function configureButtonsFromHandStart(data)
   BigBlindPosition = data.big_blind_position
 end
 
+-- TODO: Getting an error on initialization over trying to index a nil value.
+-- Non-breaking. Button still ends up in the right place, just makes an ugly error message.
 function giveDealerButtonTo(player)
   local position = player.zones.blind_zone.getPosition()
   local rotation = player.zones.blind_zone.getRotation()

@@ -66,7 +66,7 @@ function init(params)
   end
 
   EventBus.call("subscribe", {
-    event_type = "round_start",
+    event_type = "round_started",
     callback_params = {
       service  = self,
       callback = "onRoundStart"
@@ -74,7 +74,7 @@ function init(params)
   })
 
   EventBus.call("subscribe", {
-    event_type = "payout",
+    event_type = "hand_payouts",
     callback_params = {
       service  = self,
       callback = "onPayout"

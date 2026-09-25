@@ -360,7 +360,7 @@ end
 
 function removeChipFromStack(chip)
   local player = getPlayerById(chip.memo)
-  if player == nil then log("Invalid user_id: " .. chip.memo, "PlayerManager.addChipToStack", "[ERROR]", false, true) end
+  if player == nil then log("Invalid user_id: " .. chip.memo, "PlayerManager.removeChipFromStack", "[ERROR]", false, true) end
   player.stack[tostring(chip.getValue())][chip] = nil
 end
 
@@ -417,6 +417,30 @@ function resetAllPlayerBets()
     resetPlayerBet(player)
   end
 end
+
+end
+
+
+--[[
+  Handles exchanging chips between denominations for bots.
+  The server validates the exchange rates for us. All that is needed
+  here is animating the exchange of chips that took place.
+
+  params = {
+    data = {
+      user_id = string,
+      give    = [string]int,
+      receive = [string]int,
+    },
+
+    onFinish_params = {
+      service   = <Scripting Zone>,
+      callback  = string (function name in service's script),
+      args      = table (arguments to pass to callback)
+    }
+  }
+]]
+function animateExchangeChips(params) 
 
 end
 
@@ -587,71 +611,6 @@ function animateBet(player, chips)
       
     local new_name = "- "..player.display_name.." (Bet)"
     local new_memo = player.user_id.." (Bet)"
-
-    do
-    -- function transferChips(transferChips_params)
-    --   local chips_to_transfer = transferChips_params.chips_to_transfer
-    --   local destination       = transferChips_params.destination
-    --   local count             = transferChips_params.count
-    --   local new_name          = transferChips_params.new_name
-    --   local new_memo          = transferChips_params.new_memo
-
-    --   local stack_quantity = math.abs(chips_to_transfer.getQuantity())
-    --   if count == 1 then
-    --     if stack_quantity == 1 then
-    --       -- Perfect. Have the right amount. Update its meta data and move it.
-    --       _updateChipMetaData(chips_to_transfer, new_name, new_memo)
-    --       chips_to_transfer.setPositionSmooth(destination, false, false)
-    --     else
-    --       -- I just need one chip from the stack.
-    --       -- callback is called when the object finishes moving. It may be colliding
-    --       -- with the destination before it has time to update.
-    --       above_destination = chips_to_transfer.getPosition()
-    --       above_destination.y = above_destination.y + 0.2*math.abs(chips_to_transfer.getQuantity())
-    --       chips_to_transfer.takeObject({
-    --         position = above_destination,
-    --         top      = true,
-    --         smooth   = true,
-    --         callback_function = function(chip)
-    --           _updateChipMetaData(chip, new_name, new_memo)
-    --           chip.setPositionSmooth(destination, false, false)
-    --         end
-    --       })
-    --     end
-    --     -- counts[index] = 0
-    --     return count
-    --   elseif stack_quantity-2 >= count then
-    --     -- If the quantity is greater than the count+2 then we can use
-    --     -- the cut method to split the stack to our needed size
-    --     -- The [1] index is the remainder (quantity of 2 or more)
-    --     -- The [2] index is a stack of `count` quantity
-    --     local stacks = chips_to_transfer.cut(count)
-    --     _updateChipMetaData(chips_to_transfer, new_name, new_memo)
-    --     stacks[2].setPositionSmooth(destination, false, true)
-    --     -- counts[index] = 0 -- We moved exactly as many chips as needed
-    --     return count
-    --   elseif stack_quantity-1 == count then
-    --     -- If the quantity is only greater than the count by 1 then we have
-    --     -- to do more work to split the stack manually using takeObject
-    --     local current_position_of_chips_to_transfer = chips_to_transfer.getPosition()
-    --     chips_to_transfer.takeObject({
-    --       position = current_position_of_chips_to_transfer,
-    --       smooth   = false
-    --     })
-    --     _updateChipMetaData(chips_to_transfer, new_name, new_memo)
-    --     chips_to_transfer.setPositionSmooth(destination, false, true)
-    --     -- counts[index] = 0 -- We moved exactly as many chips as needed
-    --     return count
-    --   elseif stack_quantity <= count then
-    --     -- If the quantity is exactly the same as or less than count, (excluding
-    --     -- the case for count-1 above) we can just move the entire stack
-    --     _updateChipMetaData(chips_to_transfer, new_name, new_memo)
-    --     chips_to_transfer.setPositionSmooth(destination, false, true)
-    --     -- counts[index] = counts[index] - stack_quantity
-    --     return stack_quantity
-    --   end
-    -- end
-    end
 
     local transferChips_params = {
       chips_to_transfer = chip_reference,

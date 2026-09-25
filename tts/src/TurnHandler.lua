@@ -38,6 +38,14 @@ function init(params)
       callback = "onTurnStart"
     }
   })
+
+  EventBus.call("subscribe", {
+    event_type = "chip_exchange",
+    callback_params = {
+      service = self,
+      callback = "onChipExchange"
+    }
+  })
 end
 
 do -- Config
@@ -57,10 +65,14 @@ ExternalScript_onFinish_params = {
 
 --[[
   Subscribed callback given to EventBus for "player_action" events.
-  EventBus.onTurnStart
 
   params = {
-    player_id = string
+    data = {
+      player_id   = string
+      intent      = string
+      chips       = [string]int
+      accepted_at = datetime
+    },
 
     onFinish_params = {
       service  = <Scripting Zone>,
@@ -92,4 +104,25 @@ function onTurnStart(params)
     function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
     isExternalScriptMutexUnlocked
   )
+end
+
+--[[
+  Subscribed callback given to EventBus for "chip_exchange" events.
+  
+  params = {
+    data = {
+      user_id = string,
+      give    = [string]int,
+      receive = [string]int
+    },
+
+    onFinish_params = {
+      service  = <Scripting Zone>,
+      callback = string,
+      args     = any
+    }
+  }
+]]
+function onChipExchange(params)
+  log("TurnManager.onChipExchange not implemented", "Not implemented", "[ERROR]")
 end

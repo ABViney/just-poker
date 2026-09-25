@@ -38,10 +38,17 @@ function init(params)
       }
     })
     EventBus.call("subscribe", {
-      event_type = "game_state_update",
+      event_type = "game_status_changed",
       callback_params = {
         service  = self,
         callback = "onGameStateUpdate"
+      }
+    })
+    EventBus.call("subscribe", {
+      event_type = "game_ending",
+      callback_params = {
+        service  = self,
+        callback = "onGameOver"
       }
     })
     end
@@ -174,46 +181,6 @@ function onGameStateReceived(params)
   )
 end
 
--- --[[
---   Starting a hand signifies:
---   1. The buttons moved and may have changed in costs
---   2. A new deck order was provided by us or the server.
--- ]]
--- function onHandStartReceived(data)
---   lockExternalScriptMutex()
---   local params = {
---     data = data,
---     onFinish_params = GameManager_onFinish_params
---   }
-
---   EventBus.call("startHand", params)
--- end
-
--- function onRoundStartReceived(data)
---   local params = {
---     data = data,
---     onFinish_params = GameManager_onFinish_params
---   }
-
---   EventBus.call("startRound", params)
--- end
-
--- function onPlayerActionReceived(data)
---   local params = {
---     data = data,
---     onFinish_params = GameManager_onFinish_params
---   }
-
---   PlayerManager.call("animatePlayerAction", params)
--- end
-
--- function onRoundEndReceived(data)
--- end
-
--- function onPayoutReceived(data)
---   local params = {
---     data = data,
---     onFinish_params = GameManager_onFinish_params
---   }
---   PotManager.call("processPayout", params)
--- end
+function onGameOver(params)
+  log("GameStateHandler.onGameOver not implemented", "Not implemented", "[ERROR]")
+end
