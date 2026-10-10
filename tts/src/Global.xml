@@ -1,25 +1,77 @@
+<!-- 
+
+Carriage return / newline = &#13;&#10;
+
+-->
+
 <Defaults>
+  <Panel class="floating-panel"
+    color="#8f847869"
+    outline="#635341"
+    outlineSize="2 -2"
+    allowDragging="True"
+    returnToOriginalPositionWhenReleased="False"
+  />
+  <Panel class="menu-bar"
+    color="black"
+    height="20"
+    rectAlignment="UpperCenter"
+  >
+    <Button
+      width="20" height="20"
+    />
+    <Text
+      color="white"
+    />
+  </Panel>
+
+  <Panel class="div"
+    color="#897D6B"
+    outline="#705341"
+  />
 </Defaults>
 
-<!-- Game configuration menu for the Game Master -->
+<!--
+  Game configuration menu for the Game Master
+  This menu is used by the Game Master to:
+    1. Supply their auth token
+    2. Specify a configuration and create a game
+    3. Start a game
+-->
 <Panel
-    id="gameConfigurationMenu"
-    width="400"
-    height="300"
-    rectAlignment="UpperLeft"
+    id="GameConfigMenu"
+    class="floating-panel"
+    width="400" height="300"
+    rectAlignment="LowerCenter"
     
     showAnimation="SlideIn_Left"
     hideAnimation="SlideOut_Left"
 
     visibility="Black"
 >
+  <Panel
+    id="GameConfigMenuBar"
+    class="menu-bar"
+  >
+    <Text>Configure game</Text>
 
+    <Button
+      id="minimize_game_config_menu"
+      class="menu-bar-button"
+      rectAlignment="MiddleRight"
+      tooltip="Minimize this window.&#13;&#10;It can be opened again with the button&#13;&#10;that appears in the bottom right."
+      tooltipPosition="Above"
+    >-</Button>
+  </Panel>
     <!-- Load from state section? Input GameID, load gamestate from server. -->
     <!-- Tabs for switching between new game and continue game menus -->
 
     <!-- ________________________________ -->
     <!--         New game menu            -->
     <!-- ________________________________ -->
+  
+
+
 
     <!-- Starting Stack -->
 
@@ -30,11 +82,69 @@
     <!-- Register bots -->
 
 
+    <!-- Connect to existing game -->
+    <VerticalLayout
+      padding="10 10 30 10"
+    >
+      <TableLayout
+        autoCalculateHeight="True"
+        cellSpacing="3"
+        columnWidths="100 200 100"
+      >
+        <Row preferredHeight="30">
+          <Cell>
+            <Text>Auth Token: </Text>
+          </Cell>
+          <Cell columnSpan="2">
+            <InputField
+              id="listen_to_game_auth_input"
+              placeholder="Enter auth token"
+              onEndEdit="onListenToGameServerAuthValueChanged"
+            />
+          </Cell>
+        </Row>
+        <!-- <Row preferredHeight="30">
+          <Cell>
+            <Text>Server: </Text>
+          </Cell>
+          <Cell columnSpan="2">
+            <InputField
+              id="listen_to_game_server_input"
+              placeholder="Enter server URL"
+              text="https://game.bahms.org/api/poker/"
+              readOnly="True"
+              onEndEdit="onListenToGameServerInputEndEdit"
+            />
+          </Cell>
+        </Row> -->
+        <Row preferredHeight="30">
+          <Cell>
+            <Text>Listen to game: </Text>
+          </Cell>
+          <Cell childForceExpandWidth="true">
+            <InputField
+              id="listen_to_game_id_input"
+              placeholder="Enter Game ID"
+              characterValidation="Integer"
+              characterLimit="10"
+              onEndEdit="onListenToGameIdInputEndEdit"
+            />
+          </Cell>
+          <Cell>
+            <Button
+              id="listenToGameIdButton"
+              onClick="onListenToGameIdButtonPressed"
+            >
+              Listen
+            </Button>
+          </Cell>
+        </Row>
+      </TableLayout>
+    </VerticalLayout>
     <!-- Start game -->
-
 </Panel>
 
-<Defaults>
+<!-- <Defaults>
   <Panel class="TurnPanel"
     color="#8f8478"
     outline="#635341"
@@ -43,9 +153,9 @@
 </Defaults>
 
 <Panel
-  visibility="Black"
   id="TurnPanelUI"
-  class="TurnPanel"
+  visibility="Black"
+  class="floating-panel"
   ignoreLayout="true"
   allowDragging="true"
   rectAlignment="LowerCenter" offsetXY="0 250"
@@ -66,12 +176,12 @@
       </Cell>
     </Row>
   </TableLayout>
-  <!-- <Button id="CloseButton"
+  <!- <Button id="CloseButton"
     width="20" height="20"
     rectAlignment="UpperRight"
     color="#990000"
     textColor="#FFFFFF"
     text="-"
     onClick="minimizeTurnMenu"
-  /> -->
-</Panel>
+  /> ->
+</Panel> -->

@@ -1,14 +1,20 @@
 --[[ Lua code. See documentation: https://api.tabletopsimulator.com/ --]]
 
 --[[ The onLoad event is called after the game save finishes loading. --]]
-LOAD_TEST_GAME = false
-START_TEST_GAME = false
-
 CHIP_DENOMINATIONS = {["1000"] = 0, ["500"] = 0, ["100"] = 0, ["50"] = 0, ["10"] = 0}
+
+
+GAME_STATE_LOADED = false
+
+local GAMEMASTER_AUTH_TOKEN
+local GAME_ID
+
 
 local Objects
 local Services
 local Zones
+
+
 
 function onLoad()
   print("=============================") -- Helps delimit restarts
@@ -52,9 +58,11 @@ function onLoad()
       Pink   = createPlayerZoneTable("ff2ae5", "92cb00", "06b225", "5d5794"),
     },
 
-    dealer_deck_zone = getObjectFromGUID("22b504"),
-    pot_zone         = getObjectFromGUID("cac241"),
-    pot_stack_zone   = getObjectFromGUID("8a44ce")
+    chip_exchange_zone           = getObjectFromGUID("7734f1"), -- Where players put chips to exchange
+    chip_exchange_stack_zone     = getObjectFromGUID("135c3d"), -- Where chips are stacked after a player-authed exchanged
+    dealer_deck_zone             = getObjectFromGUID("22b504"),
+    pot_zone                     = getObjectFromGUID("cac241"),
+    pot_stack_zone               = getObjectFromGUID("8a44ce")
   }
 
   Objects = {
@@ -72,8 +80,6 @@ function onLoad()
   for service in params.Services do
     service.call("init", params)
   end
-  
-  log("All services loaded!")
 
   do -- Whatever buttons i created to help me test things
 
@@ -107,9 +113,45 @@ function onLoad()
 
   end
 
-  if START_TEST_GAME then
-    Services.ServerClientConnection.call("createEventListener")
+  -- Services.ServerClientConnection.call("createEventListener")
+
+  do -- Temp fill-ins for testing
+    GAMEMASTER_AUTH_TOKEN = "bahms.hguVUkyjJyE5gvlL.J0vYraHLeKc_79FyNyrSOYo8cf1IGqG9RiXXZLCKXaI"
+    UI.setAttribute("listen_to_game_auth_input", "text", "bahms.hguVUkyjJyE5gvlL.J0vYraHLeKc_79FyNyrSOYo8cf1IGqG9RiXXZLCKXaI")
   end
 end
 
 function onUpdate() end
+
+
+do -- Game Config UI
+
+
+local listener_endpoint
+
+function onListenToGameServerAuthEndEdit(_, value, id)
+  GAMEMASTER_AUTH_TOKEN = value
+end
+
+function onListenToGameIdInputEndEdit(_, value, id)
+  GAME_ID = value
+end
+
+function onListenToGameIdButtonPressed()
+
+  if GAME_ID == nil then
+    printToColor("Invalid Game ID provided.", "Black", "Red")
+    return
+  end
+
+  local poker_service_endpoint = "https://game.bahms.org/api/poker/game/".. GAME_ID .. "/state/listen"
+
+  printToColor("Attempting to connect to " .. poker_service_endpoint , "Black", "Grey")
+  local params = {
+    server_endpoint = poker_service_endpoint,
+    auth_token = GAMEMASTER_AUTH_TOKEN
+  }
+  Services.ServerClientConnection.call("createEventListener", params)
+end
+
+end
