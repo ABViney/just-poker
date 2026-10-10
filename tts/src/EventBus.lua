@@ -119,7 +119,7 @@ end
 local EVENT_SUBSCRIPTIONS = {
   ["listener_created"]    = {},
   ["welcome"]             = {},
-  ["starting_game"]       = {},
+  ["game_starting"]       = {},
   ["game_status_changed"] = {},
   ["hand_started"]        = {},
   ["round_started"]       = {},

@@ -31,7 +31,7 @@ function init(params)
       }
     })
     EventBus.call("subscribe", {
-      event_type = "starting_game",
+      event_type = "game_starting",
       callback_params = {
         service  = self,
         callback = "onStartingGame"
@@ -97,8 +97,11 @@ function onWelcome(params)
   if not params.data.started_at then
     local onFinish_params = params.onFinish_params
     log("Game not started yet. Deferring game_state load to game_start event.")
-    log(params)
-    onFinish_params.service.call(onFinish_params.callback)
+    Wait.frames(
+      function() onFinish_params.service.call(onFinish_params.callback) end,
+      2
+    )
+    
     return
   end
   onGameStateReceived(params)
@@ -134,7 +137,7 @@ function onGameStateReceived(params)
   end
 
   if not data.table or type(data.table) ~= "table" then
-    print("Error: data.table is not an isntance of Table")
+    print("Error: data.table is not an instance of Table")
     return
   end
   local table = data.table
