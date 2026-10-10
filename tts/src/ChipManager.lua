@@ -269,6 +269,9 @@ end
 --]]
 function spawnChips(chip_data)
   if not chip_data.count then chip_data.count = 0 end
+  if not chip_data.position then
+    chip_data.position = {x=0, y=0, z=0}
+  end
   local chips = {}
   for i=1, chip_data.count do
     local chip = spawnObject({
@@ -300,20 +303,6 @@ function spawnChips(chip_data)
   -- I get a stack of 8 in the middle of the table, and 3 that fall
   -- through the table until they reset above the first stack
   -- return group(chips)
-end
-
-function mapPlayerChips(player)
-  local player_betted_chip_map = PotManager.getVar("PLAYER_BETTED_CHIP_MAP")
-  local player_bet = player_betted_chip_map[player.user_id]
-  player.bet = {}
-  local player_betted_chips = player_bet.chips
-  for denomination, chips in pairs(player_betted_chips) do
-    player.bet[denomination] = {}
-    for chip, _ in pairs(chips) do
-      player.bet[denomination][chip] = 1
-    end
-  end
-  player.bet_sum = player_bet.bet
 end
 
 function updateChipMetaData(chip_reference, name, memo)
