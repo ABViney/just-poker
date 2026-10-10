@@ -142,46 +142,69 @@ function onGameStateReceived(params)
   end
   local table = data.table
 
-  -- TODO: The game state should provide the deck layout if a game is in progress.
-  -- TODO: The cards in play should be dealt from the deck same as in normal game playback
+  -- -- TODO: The game state should provide the deck layout if a game is in progress.
+  -- -- TODO: The cards in play should be dealt from the deck same as in normal game playback
+  local frame_delay = 5
+  local game_setup_parameters = {
+    {
+      service     = PlayerManager,
+      callback    = "setPlayers",
+      args        = table.players,
+      log_message = "Initializing, seating, and generating chips for players."
+    },
+    {
+      service     = BlindManager,
+      callback    = "configureButtonsFromTable",
+      args        = table,
+      log_message = "Moving blinds and dealer chip."
+    },
+    {
+      service     = DeckManager,
+      callback    = "setPlayers",
+      args        = table.players,
+      log_message = "Fixing the street to match the current round."
+    },
+    {
+      service     = PotManager,
+      callback    = "setPotFromState",
+      args        = table,
+      log_message = "Initializing the pot."
+    },
+    -- Terminating service call
+    {
+      service     = onFinish_params.service,
+      callback    = onFinish_params.callback,
+      args        = onFinish_params.args,
+      log_message = "Game state initialized"
+    }
+  }
 
-  --[[
-    Initializes player details:
-      - Position (and which seat they're in)
-      - Hands -- TODO: this should be removed when the deck data is provided
-      - Stacks
-  ]]
-  PlayerManager.call("setPlayers", table.players)
-
-  --[[
-    Initializes the buttons:
-      - Set costs
-      - Set positions
-  ]]
-  BlindManager.call("configureButtonsFromTable", table)
-
-  --[[
-    Initializes the street:
-      - Burns cards and reveals the Flop/Turn/River
-  ]]
-  DeckManager.call("setStreet", table)
-
-  -- Build pot
-  -- we should have bets be in chip denominations for my sanity
-  PotManager.call("setPotFromState", table)
-
-  -- Set the turn to the correct player and continue with the game
-  -- TurnManager.call("setTurnFromTable", table) -- Obselete: Server tracks turns.
-
-  Wait.time(
-    function()
-        -- Logic is gated by the value of this boolean.
-        -- Stops some event handlers from going crazy until a game is actually started
-        GAME_IN_PROGRESS = true
-        onFinish_params.service.call(onFinish_params.callback, onFinish_params.args)
+  local index = 1
+  for i=1, #game_setup_parameters do
+    local setup_index = i
+    Wait.condition(
+      function()
+        local service     = game_setup_parameters[index].service
+        local callback    = game_setup_parameters[index].callback
+        local args        = game_setup_parameters[index].args
+        local log_message = game_setup_parameters[index].log_message
+        
+        log(log_message)
+        service.call(callback, args)
+        
+        -- After 2 frames, increment the index.
+        -- The preceeding code should have finished executing by now, so incrementing the index
+        -- will allow the next condition to be fulfilled. 
+        Wait.frames(
+          function()
+            index = index + 1
+          end,
+          frame_delay
+        )
       end,
-    GAME_STATE_LOADED_DELAY
-  )
+      function() return index == setup_index end
+    )
+  end
 end
 
 function onGameOver(params)
