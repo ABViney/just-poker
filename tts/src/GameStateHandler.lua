@@ -140,6 +140,7 @@ function onGameStateReceived(params)
     print("Error: data.table is not an instance of Table")
     return
   end
+  GAME_IN_PROGRESS = true
   local table = data.table
 
   -- -- TODO: The game state should provide the deck layout if a game is in progress.
@@ -179,32 +180,37 @@ function onGameStateReceived(params)
     }
   }
 
-  local index = 1
-  for i=1, #game_setup_parameters do
-    local setup_index = i
-    Wait.condition(
-      function()
-        local service     = game_setup_parameters[index].service
-        local callback    = game_setup_parameters[index].callback
-        local args        = game_setup_parameters[index].args
-        local log_message = game_setup_parameters[index].log_message
-        
-        log(log_message)
-        service.call(callback, args)
-        
-        -- After 2 frames, increment the index.
-        -- The preceeding code should have finished executing by now, so incrementing the index
-        -- will allow the next condition to be fulfilled. 
-        Wait.frames(
-          function()
-            index = index + 1
-          end,
-          frame_delay
-        )
-      end,
-      function() return index == setup_index end
-    )
-  end
+  Wait.frames(
+    function()
+      local index = 1
+        for i=1, #game_setup_parameters do
+          local setup_index = i
+          Wait.condition(
+            function()
+              local service     = game_setup_parameters[index].service
+              local callback    = game_setup_parameters[index].callback
+              local args        = game_setup_parameters[index].args
+              local log_message = game_setup_parameters[index].log_message
+              
+              log(log_message)
+              service.call(callback, args)
+              
+              -- After 2 frames, increment the index.
+              -- The preceeding code should have finished executing by now, so incrementing the index
+              -- will allow the next condition to be fulfilled. 
+              Wait.frames(
+                function()
+                  index = index + 1
+                end,
+                frame_delay
+              )
+            end,
+            function() return index == setup_index end
+          )
+        end
+    end,
+    1
+  )
 end
 
 function onGameOver(params)
