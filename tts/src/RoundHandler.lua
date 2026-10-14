@@ -25,6 +25,7 @@
     3. completed:
         start: gather cards on the table back into the deck
 ]]
+local ChipManager
 local DeckManager
 local EventBus
 local PlayerManager
@@ -40,6 +41,7 @@ local ROUND_START_FUNC_MAP
 local ROUND_END_FUNC_MAP
 
 function init(params)
+  ChipManager   = params.Services.ChipManager
   DeckManager   = params.Services.DeckManager
   EventBus      = params.Services.EventBus
   PlayerManager = params.Services.PlayerManager
@@ -126,6 +128,15 @@ end
 function onRoundStart(params)
   local data = params.data
   local onFinish_params = params.onFinish_params
+
+  -- if not Global.getVar("GAME_STATE_LOADED") then
+  --   log("Game state not loaded yet. Deferring round start...")
+  --   Wait.time(
+  --     function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
+  --     0.1
+  --   )
+  --   return
+  -- end
 
   -- If there was a preceeding round, then we need to 
   if CURRENT_ROUND_TYPE and ROUND_END_FUNC_MAP[CURRENT_ROUND_TYPE] then
@@ -264,7 +275,7 @@ function endRiver()
 end
 
 --[[
-      THE COMPLETED
+  THE COMPLETED
 ]]
 function startCompleted()
   lockRoundHandlerMutex()
@@ -283,9 +294,7 @@ end
 function gatherBets()
   lockRoundHandlerMutex()
   lockExternalScriptMutex()
-
-  
-  PotManager.call("gatherBets", ExternalScript_onFinish_params)
+  ChipManager.call("moveBetsToPot", ExternalScript_onFinish_params)
 
   Wait.condition(
     unlockRoundHandlerMutex,

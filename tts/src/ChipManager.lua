@@ -3,6 +3,15 @@ local PotManager
 
 local Zones
 local BotChipExchangeStackZone
+local ChipExchangeStackZone
+local PotStackZone
+
+local ChipStackId = {
+  Stack    = " (Stack)",
+  Bet      = " (Bet)",
+  Exchange = " (Exchange)",
+  Pot      = " (Pot)"
+}
 
 CHIP_DENOMINATION_RELATIVE_POSITION = {
   ["1000"] =  {x=0,    y=0.5, z=-0.75},
@@ -18,6 +27,7 @@ function init(params)
 
   Zones = params.Zones
   BotChipExchangeStackZone = params.Zones.bot_chip_exchange_stack_zone
+  ChipExchangeStackZone    = params.Zones.chip_exchange_stack_zone
   PotStackZone             = params.Zones.pot_stack_zone
   log("ChipManager initialized")
 end
@@ -28,27 +38,36 @@ CHIP_TRANSFER_DELAY = 1.25
 
 end
 
---[[
-  Takes a chip or chip stack and assigns it to a player.
+do -- Mutex
 
-  data = {
-    player_id    = string,
-    player       = <Player>,
-    chips        = <Chip>|<ChipStack>
-  }
-]]
-function assignChipsToPlayer(data)
-  local player = data.player
-  if data.player_id then player = PlayerManager.call("getPlayerById", data.player_id) end
-  data.chips.setName("- " .. player.display_name)
-  data.chips.memo = player.user_id
-  PlayerManager.call("addChipToStack", data.chips)
+local associative_mutex = {}
+function lockAssociativeMutex(index) associative_mutex[index] = true end
+function unlockAssociativeMutex(index) associative_mutex[index] = false end
+function isAssociativeMutexUnlocked(index) return not associative_mutex[index] end
+
 end
+
+--[[
+  Generates a table for the name and memo to be assigned to chips based on who owns
+  them and where they will be.
+
+]]
+function generateChipData(player, stack_type)
+  if string.lower(stack_type) == "pot" then
+    return { name = "- (Pot)", memo = ChipStackId.Pot }
+  end
+  
+  if player == nil then
+    -- Concatenating nil in the next branch will throw an error making issues here obvious
+    log("\"player\" field is nil", "ChipManager.generateChipData", "[ERROR]", false, true)
+  end
 
 function assignChipsToPot(chips)
   chips.setName("- Pot")
   chips.memo = "Pot"
 end
+
+
 
 function getAllBetChips()
   local betted_chips = {}
@@ -85,7 +104,6 @@ function transferChips(transferChips_params)
   local new_memo          = transferChips_params.new_memo
   local onFinish_params   = transferChips_params.onFinish_params
 
-  
   local number_of_chips_moved = 0
   -- If the destination is a chip, we will move the chips to just above it
   if destination.type then
@@ -151,7 +169,6 @@ function transferChips(transferChips_params)
 
   Wait.time(
     function()
-      log(onFinish_params)
       onFinish_params.service.call(onFinish_params.callback, onFinish_params.args)
     end,
     CHIP_TRANSFER_DELAY
@@ -192,17 +209,20 @@ function getPositionOfChipsForPot(denomination)
 end
 
 function initializePot(pot)
-  local chip_data = {
-    public_owner = "Pot",
+  local chip_data = generateChipData(nil, "pot")
+  local spawnChips_params = {
+    name = chip_data.name,
+    memo = chip_data.memo,
     rotation = {0, 180, 0},
-    memo = "Pot"
   }
   for denomination, count in pairs(pot or {}) do
     chip_data.type = "Chip_"..denomination
     -- chip_data.position = Zones.pot_stack_zone.positionToWorld(ChipDenominationRelativePosition[denomination])
     chip_data.count = count
-    local chip_stack = spawnChips(chip_data)
-    chip_stack.setPosition(Zones.pot_stack_zone.positionToWorld(CHIP_DENOMINATION_RELATIVE_POSITION[denomination]))
+    local chip_stack = spawnChips(spawnChips_params)
+    if chip_stack ~= nil then
+      chip_stack.setPosition(Zones.pot_stack_zone.positionToWorld(CHIP_DENOMINATION_RELATIVE_POSITION[denomination]))
+    end
   end
 end
 
@@ -211,6 +231,10 @@ end
 --]]
 function initializeChipsForPlayer(player)
   log("Initializing chips for " .. player.display_name)
+  local stack_chip_data = generateChipData(player, "stack")
+  stack_chip_data.rotation = player.zones.hand_zone.getRotation()
+  local bet_chip_data   = generateChipData(player, "bet")
+  bet_chip_data.rotation = player.zones.hand_zone.getRotation()
 
   local player_stack = {
     ["1000"] = {},
@@ -227,27 +251,22 @@ function initializeChipsForPlayer(player)
     ["10"]   = {}
   }
 
-  local chip_data = {
-    public_owner = player.display_name,
-    rotation = player.zones.hand_zone.getRotation(),
-    memo = player.user_id
-  }
   for denomination, count in pairs(player.stack) do
-    chip_data.type = "Chip_"..denomination
+    stack_chip_data.type = "Chip_"..denomination
     -- Placement of chips will be offset from the "stack zone" each player has
-    chip_data.position = player.zones.stack_zone.positionToWorld(CHIP_DENOMINATION_RELATIVE_POSITION[denomination])
-    chip_data.count = count
-    local chip_stack = spawnChips(chip_data)
+    stack_chip_data.position = player.zones.stack_zone.positionToWorld(CHIP_DENOMINATION_RELATIVE_POSITION[denomination])
+    stack_chip_data.count = count
+    local chip_stack = spawnChips(stack_chip_data)
     if chip_stack then
       table.insert(player_stack[denomination], chip_stack)
     end
   end
   for denomination, count in pairs(player.current_bet or {}) do
-    chip_data.type = "Chip_"..denomination
+    bet_chip_data.type = "Chip_"..denomination
     -- Placement of chips will be offset from the "stack zone" each player has
-    chip_data.position = player.zones.bet_zone.positionToWorld(CHIP_DENOMINATION_RELATIVE_POSITION[denomination])
-    chip_data.count = count
-    local chip_stack = spawnChips(chip_data)
+    bet_chip_data.position = player.zones.bet_zone.positionToWorld(CHIP_DENOMINATION_RELATIVE_POSITION[denomination])
+    bet_chip_data.count = count
+    local chip_stack = spawnChips(bet_chip_data)
     if chip_stack then
       table.insert(player_current_bet[denomination], chip_stack)
     end
@@ -264,9 +283,10 @@ end
 
     -- Prevents non-matching chips from stacking
     public_owner = string,
+    name = string,
+    memo = string,
     position = {x: float, y: float, z: float},
     rotation = {x: float, y: float, z: float},
-    memo = string
     count = int
   }
 --]]
@@ -284,7 +304,7 @@ function spawnChips(chip_data)
       scale = {1, 1, 1},
       sound = false,
     })
-    chip.setName("- " .. chip_data.public_owner)
+    chip.setName(chip_data.name)
     chip.memo = chip_data.memo
 
     table.insert(chips, chip)
@@ -311,4 +331,417 @@ end
 function updateChipMetaData(chip_reference, name, memo)
   chip_reference.setName(name)
   chip_reference.memo = memo
+--[[
+  Moves chips between two stacks (stack/bet, stack/exchange, bet/pot, etc.)
+  Handles positioning and modifying metadata for the chips.
+
+  The "stack_type" describes which chips are being moved, and what they become after being moved.
+  I.e. if giving_stack_type is "stack" and receiving_stack_type is "bet", then the function finds
+  the chips specified in chips_to_move from the player's stack and moves them to their bet.
+  This handles renaming and modifying metadata so chips always have an owner.
+
+  params = {
+    owner                    = <Player>|string,
+    giving_stack_type        = "stack"|"bet"|"exchange"|"pot",
+    receiving_stack_type     = "stack"|"bet"|"exchange"|"pot",
+    chips_to_move            = {
+      [denomination] = int,
+      ...
+    }
+    
+    onFinish_params = {
+      service  = <Scripting Zone>,
+      callback = string (func name),
+      args     = any
+    }
+  }
+]]
+function moveChipsBetweenStacks(params)
+  local owner
+  if type(params.owner) == "string" then
+    owner = PlayerManager.call("getPlayerById", params.owner)
+    if not owner then
+      local msg = logString("Player "..params.owner.." not found.", "ChipManager.moveChipsBetweenStacks", "[ERROR]", false, true)
+      log(msg)
+      return
+    end
+  else
+    owner = params.owner
+  end
+
+  local giving_stack_type        = params.giving_stack_type
+  local receiving_stack_type     = params.receiving_stack_type
+  local onFinish_params          = params.onFinish_params
+
+  if not type(params.chips_to_move) == "table" then
+    log("Invalid [chips_to_transfer] parameter provided", "ChipManager.moveChipsBetweenStacks", "[ERROR]", false, true)
+    return
+  end
+
+  -- Each movement can be done 
+  local promises      = {}
+  local denominations = {}
+  local counts        = {}
+  for denomination, count in pairs(params.chips_to_move) do
+    if count > 0 then
+      table.insert(denominations, denomination)
+      table.insert(counts, count)
+      table.insert(promises, false)
+    end
+  end
+
+  -- Once all denominations have been moved, this returns true
+  function _promisesFulfilled()
+    for promise_fulfilled in promises do if not promise_fulfilled then return false end end
+    return true
+  end
+
+  if _promisesFulfilled() then
+    -- Empty move data. Whatever.
+    onFinish_params.service.call(onFinish_params.callback, onFinish_params.args)
+    return
+  end
+  
+  local givable_chip_data = generateChipData(owner, giving_stack_type)
+  local givable_chips = getChipsByMemo(givable_chip_data.memo)
+  
+  local receivable_chip_data = generateChipData(owner, receiving_stack_type)
+  local receivable_chips = getChipsByMemo(receivable_chip_data.memo)
+  
+  local chip_offsets = CHIP_DENOMINATION_RELATIVE_POSITION
+
+  function _getChipToMoveForDenomination(denomination)
+    if not givable_chips[denomination] then
+      log(giving_stack_type.." has no valid reference of a $"..denomination.." chip that can be referenced", "ChipManager.moveChipsBetweenStacks", "ChipManager.moveChipsBetweenStacks", "[ERROR]", false, true)
+      return
+    end
+    for chip_reference in givable_chips[denomination] do
+      if chip_reference then
+        return chip_reference
+      end
+    end
+  end
+
+  -- TODO: Adjust exchange zone to a position for bots
+  local receiving_stack_zone = nil
+  if string.lower(receiving_stack_type) == "stack" then
+    receiving_stack_zone = owner.zones.stack_zone
+  elseif string.lower(receiving_stack_type) == "bet" then
+    receiving_stack_zone = owner.zones.bet_zone
+  elseif string.lower(receiving_stack_type) == "exchange" then
+    if owner.user_type == "bot" then
+      receiving_stack_zone = BotChipExchangeStackZone
+    else
+      receiving_stack_zone = ChipExchangeStackZone
+    end
+  elseif string.lower(receiving_stack_type) == "pot" then
+    receiving_stack_zone = PotStackZone
+  end
+
+  function _getDestinationForDenomination(denomination)
+    if receivable_chips[denomination] then
+      for chip_reference in receivable_chips[denomination] do
+        if chip_reference then
+          return chip_reference
+        end
+      end
+    end
+    if type(receiving_stack_zone) == "userdata" then
+      return receiving_stack_zone.positionToWorld(chip_offsets[denomination])
+    elseif type(receiving_stack_zone) == "table" then
+      return {
+        x = receiving_stack_zone.x + chip_offsets[denomination].x,
+        y = receiving_stack_zone.y + chip_offsets[denomination].y,
+        z = receiving_stack_zone.z + chip_offsets[denomination].z
+      }
+    end
+  end
+
+  function _moveChipsForPromise(index)
+    local denomination = denominations[index]
+    local count        = counts[index]
+
+    -- Early return if there's no chips left to move
+    if count == 0 then
+      promises[index] = true
+      return
+    end
+
+    -- Get the chips being moved
+    local chip_reference = _getChipToMoveForDenomination(denomination)
+    -- Where the chips will move to
+    local destination    = _getDestinationForDenomination(denomination)
+
+    if not chip_reference then
+      log("Could not find $"..denomination.." chips to move for "..giving_stack_type, "ChipManager.moveChipsBetweenStacks", "[ERROR]", false, true)
+      return
+    end
+
+    local transferChips_params = {
+      chips_to_transfer = chip_reference,
+      destination       = destination,
+      count             = count,
+      new_name          = receivable_chip_data.name,
+      new_memo          = receivable_chip_data.memo,
+      onFinish_params   = {
+        service  = self,
+        callback = "unlockAssociativeMutex",
+        args     = denomination
+      }
+    }
+    lockAssociativeMutex(denomination)
+    local number_of_chips_moved = transferChips(transferChips_params)
+    counts[index] = count - number_of_chips_moved
+
+    Wait.condition(
+      function()
+        givable_chips    = getChipsByMemo(givable_chip_data.memo)
+        receivable_chips = getChipsByMemo(receivable_chip_data.memo)
+        _moveChipsForPromise(index)
+      end,
+      function() return isAssociativeMutexUnlocked(denomination) end
+    )
+  end
+  
+  for i = 1, #promises do
+    _moveChipsForPromise(i)
+  end
+
+  Wait.condition(
+    function()
+      onFinish_params.service.call(onFinish_params.callback, onFinish_params.args)
+    end,
+    _promisesFulfilled
+  )
+end
+
+--[[
+  params = {
+    owner                      = <Player>,
+    chips_to_exchange          = {
+      give    = { [denomination] = int, ... },
+      receive = { [denomination] = int, ... }
+    }
+
+    onFinish_params = {
+      service  = <Scripting Zone>,
+      callback = string (func name),
+      args     = any
+    }l
+  }
+]]
+function exchangeChips(params)
+  -- These indexes can be arbitrary, just used for controlling flow
+  local giving_chips_mutex_index     = "exchangeChips -- moving the give chips"
+  local exchanging_chips_mutex_index = "exchangeChips -- deleting the given chips and spawning the receive chips"
+  local receiving_chips_mutex_index  = "exchangeChips -- moving the receive chips"
+
+  -- The first move is give->receive, the second move is receive->give.
+  local giving_stack_type    = "stack"
+  local receiving_stack_type = "exchange"
+
+  -- Unpacked params
+  local owner           = params.owner
+  local give_chips      = params.chips_to_exchange.give
+  local receive_chips   = params.chips_to_exchange.receive
+  local onFinish_params = params.onFinish_params
+
+  --[[
+    The exchange process for bots is broken into 4 steps that allow each
+    process to be encapsulated thanks to execution control flow:
+      1. Move the given chips
+      2. Delete the given chips and spawn in the received chips
+      3. Move the received chips
+      4. Invoke the onFinish callback  
+  ]] 
+  lockAssociativeMutex(giving_chips_mutex_index)
+  lockAssociativeMutex(exchanging_chips_mutex_index)
+  lockAssociativeMutex(receiving_chips_mutex_index)
+
+  -- Step 1: Move given chips
+  -- The first thing to happen is moving the chips being exchanged to their
+  -- designated zone
+  local give_moveChipsBetweenStacks_params = {
+    owner = owner,
+    giving_stack_type = giving_stack_type,
+    receiving_stack_type = receiving_stack_type,
+    chips_to_move = give_chips,
+
+    onFinish_params = {
+      service  = self,
+      callback = "unlockAssociativeMutex",
+      args     = giving_chips_mutex_index
+    }
+  }
+  moveChipsBetweenStacks(give_moveChipsBetweenStacks_params)
+
+  
+  -- Step 2: Delete given chips and spawn in the received chips
+  -- This list will contain all the information for the chips we need to create
+  local exchange_chip_data = generateChipData(owner, receiving_stack_type)
+  local spawnChips_params_list = generateSpawnChipsParameters({
+    name        = exchange_chip_data.name,
+    memo        = exchange_chip_data.memo,
+    origin_zone = BotChipExchangeStackZone,
+    chips       = receive_chips
+  })
+  Wait.condition(
+    function()
+      -- The given chips are deleted and the received chips are spawned
+      local given_chips = getChipsByMemo(exchange_chip_data.memo)
+      for _, chip_references in pairs(given_chips) do
+        for chip_reference in chip_references do
+          if chip_reference then chip_reference.destruct() end
+        end
+      end
+      for spawnChips_params in spawnChips_params_list do
+        spawnChips(spawnChips_params)
+      end
+
+      -- Need to wait at least 1 frame for the game to fully destruct the given chips
+      -- Once that guarantee is realized we can mark spawning chips as complete
+      Wait.frames(
+        function()
+          unlockAssociativeMutex(exchanging_chips_mutex_index)
+        end,
+        1
+      )
+    end,
+    function() return isAssociativeMutexUnlocked(giving_chips_mutex_index) end
+  )
+
+  -- Step 3: Move the received chips
+  -- Once the exchange has happened, the received chips are moved to the bot's stack
+  local receive_moveChipsBetweenStacks_params = {
+    owner                = owner,
+    giving_stack_type    = receiving_stack_type,
+    receiving_stack_type = giving_stack_type,
+    chips_to_move        = receive_chips,
+
+    onFinish_params      = {
+      service  = self,
+      callback = "unlockAssociativeMutex",
+      args     = receiving_chips_mutex_index
+    }
+  }
+  Wait.condition(
+    function()
+      
+      -- There's an issue where, when chips are stacked, the reference for one of the
+      -- chips that is destroyed when the stack is formed lingers. I don't know if ther
+      -- is a specified time/frame i should wait, but around 0.75 seconds seems to be
+      -- enough time on my system for it to figure itself out.
+      Wait.time(
+        function() moveChipsBetweenStacks(receive_moveChipsBetweenStacks_params) end,
+        0.75
+      )
+    end,
+    function() return isAssociativeMutexUnlocked(exchanging_chips_mutex_index) end
+  )
+
+  -- Step 4: Invoke the onFinish callback
+  -- Everything is done. All that's left is to give control back to the caller.
+  Wait.condition(
+    function()
+      onFinish_params.service.call(onFinish_params.callback, onFinish_params.args)
+    end,
+    function() return isAssociativeMutexUnlocked(receiving_chips_mutex_index) end
+  )
+end
+
+function getChipsByMemo(memo)
+  local chips = {}
+  for object in getObjects() do
+    if PotManager.call("isChip", object) and object.memo == memo then
+      local denomination = tostring(object.getValue())
+      if not chips[denomination] then
+        chips[denomination] = {}
+      end
+      table.insert(chips[denomination], object)
+    end
+  end
+  return chips
+end
+
+function getBettedChips()
+  local chips = {}
+  for object in getObjects() do
+    if PotManager.call("isChip", object) and string.sub(object.memo, -#ChipStackId.Bet) == ChipStackId.Bet then
+      table.insert(chips, object)
+    end
+  end
+  return chips
+end
+
+function moveBetsToPot(onFinish_params)
+  -- Completion of this function determined is when all players with active bets have had their bets collected
+  local mutex_indices = {}
+  function _allMutexesReleased()
+    for mutex_index in mutex_indices do
+      if not isAssociativeMutexUnlocked(mutex_index) then return false end
+    end
+    return true
+  end
+
+  -- All players in/out are checked. Out players won't have a bet, but if they did, it's collected.
+  local players = PlayerManager.call("getPlayers")
+
+  -- Execution of a player's bets being collected occurs after the previous player's bet has been collected.
+  -- This allows chips to be moved quickly without having to manage collapsing multiple references into one.
+  local previous_mutex_index = nil
+  for player in players do
+    -- This index can be arbitrary
+    local mutex_index = player.user_id.." collecting bet"
+
+    -- If the player doesn't have any chips betted then they will be skipped.
+    local player_has_betted_chips = false
+    -- The data we get from the getChipsByMemo is { [denomination] = {Object, ...} } which 
+    -- needs to be mapped to { [denomination] = int }
+    local chips_to_move = {}
+    local betted_chips = getChipsByMemo( generateChipData(player, "bet").memo )
+    for denomination, chip_references in pairs(betted_chips) do
+      chips_to_move[denomination] = 0
+      for chip_reference in chip_references do
+        chips_to_move[denomination] = chips_to_move[denomination] + math.abs(chip_reference.getQuantity())
+        player_has_betted_chips = true
+      end
+    end
+
+    if player_has_betted_chips then
+      -- Since this loop executes synchronously we can ensure each coroutine will execute only when
+      -- the previous coroutine has finished
+      lockAssociativeMutex(mutex_index)
+      table.insert(mutex_indices, mutex_index)
+      local locally_scoped_previous_mutex_index = previous_mutex_index -- need a locally scoped variable for a later comparison
+      previous_mutex_index = mutex_index
+
+      Wait.condition(
+        function()
+          moveChipsBetweenStacks({
+            owner = player.user_id,
+            giving_stack_type = "bet",
+            receiving_stack_type = "pot",
+            chips_to_move = chips_to_move,
+            onFinish_params = {
+              service = self,
+              callback = "unlockAssociativeMutex",
+              args = mutex_index
+            }
+          })
+        end,
+        function()
+          -- If there is no previous mutex index assigned then this is the first coroutine to run
+          if locally_scoped_previous_mutex_index == nil then return true end
+          -- Once the previous mutex index is released then it is this coroutine's turn
+          if not isAssociativeMutexUnlocked(locally_scoped_previous_mutex_index) then return false end
+          return true
+        end
+      )
+    end
+  end
+
+  Wait.condition(
+    function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
+    _allMutexesReleased
+  )
 end

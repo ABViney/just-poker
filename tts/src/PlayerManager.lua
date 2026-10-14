@@ -33,6 +33,8 @@ local DeckManager
 local PotManager
 local TurnManager
 
+local ChipExchangeZone
+local ChipExchangeStackZone
 local PlayerZones
 local PotZone
 local SEATS = {'Red', 'Orange', 'Yellow', 'Green', 'Teal', 'Blue', 'Purple', 'Pink'}
@@ -45,10 +47,11 @@ function init(params)
   ChipManager  = params.Services.ChipManager
   DeckManager  = params.Services.DeckManager
   PotManager   = params.Services.PotManager
-  TurnManager  = params.Services.TurnManager
 
-  PlayerZones  = params.Zones.PlayerZones
-  PotZone      = params.Zones.pot_zone
+  ChipExchangeZone         = params.Zones.chip_exchange_zone
+  ChipExchangeStackZone    = params.Zones.chip_exchange_stack_zone
+  PlayerZones              = params.Zones.PlayerZones
+  PotZone                  = params.Zones.pot_zone
   log("PlayerManager initialized")
 end
 
@@ -86,7 +89,18 @@ function unlockAssociativeMutex(index) associative_mutex[index] = false end
 function isAssociativeMutexUnlocked(index) return not associative_mutex[index] end
 
 --[[
+  params = {
+    data = {
+      player_id = string
 
+    },
+
+    onFinish_params = {
+      service   = <Scripting Zone>,
+      callback  = string (function name in service's script),
+      args      = table (arguments to pass to callback)
+    }
+  }
 ]]
 function startPlayerTurn(params)
   local player = getPlayerById(params.data.player_id)
@@ -382,33 +396,33 @@ function updatePlayerStackAndBet(player)
   -- Chips outside of the PotZone are part of the stack
   for chip in chips_for_this_player do
     -- Had a weird issue with assignment of nil to not removing an association
+    local value = chip.getValue() * math.abs(chip.getQuantity())
     if string.find(chip.memo, "(Bet)") then
       table.insert(player.bet[tostring(chip.getValue())], chip)
+      player.bet_value = player.bet_value + value
     else
       table.insert(player.stack[tostring(chip.getValue())], chip)
+      player.stack_value = player.stack_value + value
     end
   end
 end
 
 function resetPlayerStack(player)
-  player.stack = {
-    ["1000"] = {},
-    ["500"]  = {},
-    ["100"]  = {},
-    ["50"]   = {},
-    ["10"]   = {}
-  }
-  player.stack_sum = 0
+  player.stack = _generateDenominationReferenceTable()
+  player.stack_value = 0
 end
 function resetPlayerBet(player)
-  player.bet = {
+  player.bet = _generateDenominationReferenceTable()
+  player.bet_value = 0
+end
+function _generateDenominationReferenceTable()
+  return {
     ["1000"] = {},
     ["500"]  = {},
     ["100"]  = {},
     ["50"]   = {},
     ["10"]   = {}
   }
-  player.bet_sum = 0
 end
 
 -- This is called when the Pot collects all bets for the round
@@ -418,16 +432,27 @@ function resetAllPlayerBets()
   end
 end
 
-end
+end -- End utility functions
 
+--[[
+  Bots (and websocket players) perform their actions directly against the
+  server. We only get the report. We can infer "what" a they did based on
+  the report that we get for their turn.
+]]
+do
 
 --[[
   Handles exchanging chips between denominations for bots.
   The server validates the exchange rates for us. All that is needed
   here is animating the exchange of chips that took place.
 
+  Note: I'm not sure "how" I want this animated. I was told to keep the dedicated
+  chip-exchange area clear of bots to avoid confusing players who may engage exchanges
+  outside of their turn. For now, I'm just going to raise the "give" chips above the
+  bot's stack and then "poof" them into the "receive" chips.
+
   params = {
-    data = {
+    data = { // <ChipExchangeDTO>
       user_id = string,
       give    = [string]int,
       receive = [string]int,
@@ -436,20 +461,40 @@ end
     onFinish_params = {
       service   = <Scripting Zone>,
       callback  = string (function name in service's script),
-      args      = table (arguments to pass to callback)
+      args      = any (arguments to pass to callback)
     }
   }
 ]]
-function animateExchangeChips(params) 
+function animateExchangeChips(params)
+  local player = getPlayerById(params.data.user_id)
+  if not player then
+    log("Player "..params.data.user_id.." not found.", "PlayerManager.animateExchangeChips", "[ERROR]", false, true)
+    return
+  end
 
+  broadcastToAll(player.display_name.." is exchanging chips", player.color)
+
+  local onFinish_params = params.onFinish_params
+  lockExternalScriptMutex()
+  local exchangeChips_params = {
+    owner             = player,
+    chips_to_exchange = {
+      give    = params.data.give,
+      receive = params.data.receive,
+    },
+    onFinish_params   = {
+      service  = self,
+      callback = "unlockExternalScriptMutex",
+      args     = nil
+    }
+  }
+  ChipManager.call("exchangeChips", exchangeChips_params)
+
+  Wait.condition(
+    function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
+    isExternalScriptMutexUnlocked
+  )
 end
-
---[[
-  Bots (and websocket players) perform their actions directly against the
-  server. We only get the report. We can infer "what" a they did based on
-  the report that we get for their turn.
-]]
-do
 
 --[[
   This function animates player actions that are provided by the server.
@@ -462,7 +507,7 @@ do
       service   = <Scripting Zone>,
       callback  = string (function name in service's script),
       args      = table (arguments to pass to callback)
-  }
+    }
   }
 --]]
 function animatePlayerAction(params)
@@ -472,6 +517,19 @@ function animatePlayerAction(params)
   if not player then
     log("Player " .. data.player_id .. " not found.", "PlayerManager.animatePlayerAction", "[ERROR]", false, true)
     return
+  end
+
+  if params.data.intent == "all_in" then
+    -- going all in provides us an empty chips field.
+    -- need to patch the data in order to move the actual chips
+    local chips = {}
+    for denomination, chip_references in pairs(player.stack) do
+      chips[denomination] = 0
+      for chip_reference in chip_references do
+        chips[denomination] = chips[denomination] + math.abs(chip_reference.getQuantity())
+      end
+    end
+    params.data.chips = chips
   end
 
   -- I'm sure I'll end up revisiting this again :^)
@@ -528,143 +586,28 @@ end
   Moves the chips that the player bet into the betting zone.
 ]]
 function animateBet(player, chips)
-  local promises       = {}
-  local denominations  = {}
-  local counts         = {}
-  for denomination, count in pairs(chips) do
-    table.insert(denominations, denomination)
-    table.insert(counts, count)
-    table.insert(promises, false)
-  end
-
-  if not chips or #denominations == 0 then
-    -- No chips to move.
-    return
-  end
-
   lockExternalScriptMutex()
-  updatePlayerStackAndBet(player)
+  local moveChipsBetweenStacks_params = {
+    owner = player,
+    giving_stack_type    = "stack",
+    receiving_stack_type = "bet",
+    chips_to_move        = chips,
 
-  do -- Internal mutexes
-
-  -- If not all denominations have been allocated then this returns false
-  function _promisesFulfilled()
-    for promise_fulfilled in promises do if not promise_fulfilled then return false end end
-    return true
-  end
-
-  end
-
-  local betting_zone = player.zones.bet_zone
-  local chip_offsets = ChipManager.getVar("CHIP_DENOMINATION_RELATIVE_POSITION")
-
-  function _getChipToBetForDenomination(denomination)
-    if not player.stack[denomination] then
-      log(player.display_name.." has no record of $"..denomination.." chips that can be bet", "PlayerManager.animateBet", "[ERROR]", false, true)
-      return
-    end
-
-    for chip_reference in player.stack[denomination] do
-      if chip_reference then
-        return chip_reference
-      end
-    end
-    log(player.display_name.." has no valid reference of a $"..denomination.." chip that can be bet", "PlayerManager.animateBet", "[ERROR]", false, true)
-  end
-
-  function _getBettingDestinationForDenomination(denomination)
-    if player.bet[denomination] then
-      -- If the player has an existing bet with this denomination, use
-      -- its position
-      for chip_reference in player.bet[denomination] do
-        if chip_reference then
-          return chip_reference
-        end
-      end
-      -- Otherwise, get the default position
-    end
-    return betting_zone.positionToWorld(chip_offsets[denomination])
-  end
-
-  function _placeBetForDenomination(index)
-    
-    local denomination = denominations[index]
-    local count        = counts[index]
-
-    -- Early return if there's no chips left to move
-    if count == 0 then
-      promises[index] = true
-      return
-    end
-
-    -- What stack we're pulling from
-    local chip_reference = _getChipToBetForDenomination(denomination)
-    -- Where we're sending chips to
-    local destination    = _getBettingDestinationForDenomination(denomination)
-
-    if not chip_reference then
-      -- Irreconcilable error for now.
-      return
-    end
-    
-    
-      
-    local new_name = "- "..player.display_name.." (Bet)"
-    local new_memo = player.user_id.." (Bet)"
-
-    local transferChips_params = {
-      chips_to_transfer = chip_reference,
-      destination       = destination,
-      count             = count,
-      new_name          = new_name,
-      new_memo          = new_memo,
-      onFinish_params   = {
-        service  = self,
-        callback = "unlockAssociativeMutex",
-        args     = denomination
-      }
+    onFinish_params = {
+      service = self,
+      callback = "unlockExternalScriptMutex"
     }
-    lockAssociativeMutex(denomination)
-    -- local num_of_chips_moved = transferChips(transferChips_params)
-    local num_of_chips_moved = ChipManager.call("transferChips", transferChips_params)
-    counts[index] = count - num_of_chips_moved
-
-    Wait.condition(
-      function()
-        updatePlayerStackAndBet(player)
-        _placeBetForDenomination(index)
-      end,
-      function() return isAssociativeMutexUnlocked(denomination) end
-    )
-  end
-  
-  for i = 1, #promises do
-    _placeBetForDenomination(i)
-  end
-
-  Wait.condition(
-    unlockExternalScriptMutex,
-    _promisesFulfilled
-  )
+  }
+  ChipManager.call("moveChipsBetweenStacks", moveChipsBetweenStacks_params)
 end
 
-end
-
---[[
-
-]]
-local ignore_events = true
-Wait.time(
-  function() ignore_events = false end,
-  1
-)
+end -- Bot animations
 
 --[[
   Chips are "spawned" when taken out of a stack. 2 chips are spawned when a stack
   of 2 is split, with GUID's unique from the original stack.
 ]]
 function onObjectSpawn(object)
-  if ignore_events then return end
   if string.find(object.type, "Chip") then
     -- Figure out who the chip belongs to
     -- If its the pot, do nothing
@@ -673,12 +616,13 @@ function onObjectSpawn(object)
     local player_id_start, player_id_end = string.find(object.memo, "^[a-zA-Z0-9]+")
     local player_id = string.sub(object.memo, player_id_start, player_id_end)
     local player = getPlayerById(player_id)
-    updatePlayerStackAndBet(player)
+    if player then
+      updatePlayerStackAndBet(player)
+    end
   end
 end
 
 function onObjectDestroy(object)
-  if ignore_events then return end
   if string.find(object.type, "Chip") then
     -- Figure out who the chip belongs to
     -- If its the pot, do nothing
@@ -687,7 +631,8 @@ function onObjectDestroy(object)
     local player_id_start, player_id_end = string.find(object.memo, "^[a-zA-Z0-9]+")
     local player_id = string.sub(object.memo, player_id_start, player_id_end)
     local player = getPlayerById(player_id)
-    updatePlayerStackAndBet(player)
-
+    if player then 
+      updatePlayerStackAndBet(player)
+    end
   end
 end
