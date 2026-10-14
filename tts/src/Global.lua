@@ -58,6 +58,7 @@ function onLoad()
       Pink   = createPlayerZoneTable("ff2ae5", "92cb00", "06b225", "5d5794"),
     },
 
+    bot_chip_exchange_stack_zone = getObjectFromGUID("662bb8"), -- Where bots exchange
     chip_exchange_zone           = getObjectFromGUID("7734f1"), -- Where players put chips to exchange
     chip_exchange_stack_zone     = getObjectFromGUID("135c3d"), -- Where chips are stacked after a player-authed exchanged
     dealer_deck_zone             = getObjectFromGUID("22b504"),

@@ -2,6 +2,7 @@ local PlayerManager
 local PotManager
 
 local Zones
+local BotChipExchangeStackZone
 
 CHIP_DENOMINATION_RELATIVE_POSITION = {
   ["1000"] =  {x=0,    y=0.5, z=-0.75},
@@ -16,6 +17,8 @@ function init(params)
   PotManager = params.Services.PotManager
 
   Zones = params.Zones
+  BotChipExchangeStackZone = params.Zones.bot_chip_exchange_stack_zone
+  PotStackZone             = params.Zones.pot_stack_zone
   log("ChipManager initialized")
 end
 
