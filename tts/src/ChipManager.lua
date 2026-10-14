@@ -51,6 +51,8 @@ end
   Generates a table for the name and memo to be assigned to chips based on who owns
   them and where they will be.
 
+  player = <Player>|nil
+  stack_type = "stack"|"bet"|"exchange"|"pot"
 ]]
 function generateChipData(player, stack_type)
   if string.lower(stack_type) == "pot" then
@@ -62,9 +64,15 @@ function generateChipData(player, stack_type)
     log("\"player\" field is nil", "ChipManager.generateChipData", "[ERROR]", false, true)
   end
 
-function assignChipsToPot(chips)
-  chips.setName("- Pot")
-  chips.memo = "Pot"
+  if string.lower(stack_type) == "stack" then
+    return { name = "- "..player.display_name, memo = player.user_id..ChipStackId.Stack }
+  elseif string.lower(stack_type) == "bet" then
+    return { name = "- "..player.display_name.." (Bet)", memo = player.user_id..ChipStackId.Bet }
+  elseif string.lower(stack_type) == "exchange" then
+    return { name = "- "..player.display_name.." (Exchange)", memo = player.user_id..ChipStackId.Exchange }
+  else
+    log("Invalid stack_type provided", "ChipManager.generateChipData", "[ERROR]", false, true)
+  end
 end
 
 
@@ -282,7 +290,6 @@ end
     type = "Chip_10|Chip_50|Chip_100|Chip_500|Chip_1000",
 
     -- Prevents non-matching chips from stacking
-    public_owner = string,
     name = string,
     memo = string,
     position = {x: float, y: float, z: float},
@@ -328,9 +335,50 @@ function spawnChips(chip_data)
   -- return group(chips)
 end
 
+--[[
+  Create a list of parameters for spawning chips
+
+  params = {
+    name        = string,
+    memo        = string,
+    origin_zone = <Scripting Zone>,
+    chips = {
+      [denomination] = int,
+      ...
+    }
+  }
+  
+  returns an array of params for the spawnChips function.
+]]
+function generateSpawnChipsParameters(params)
+  local spawnChips_params_list = {}
+  local spawnChips_template = {
+    name     = params.name,
+    memo     = params.memo,
+    rotation = params.origin_zone.getRotation()
+  }
+  for denomination, count in pairs(params.chips) do
+    if count > 0 then
+      local spawnChips_params = {
+        name     = spawnChips_template.name,
+        memo     = spawnChips_template.memo,
+        rotation = spawnChips_template.rotation,
+  
+        type     = "Chip_"..denomination,
+        count    = count,
+        position = params.origin_zone.positionToWorld(CHIP_DENOMINATION_RELATIVE_POSITION[denomination])
+      }
+      table.insert(spawnChips_params_list, spawnChips_params)
+    end
+  end
+  return spawnChips_params_list
+end
+
 function updateChipMetaData(chip_reference, name, memo)
   chip_reference.setName(name)
   chip_reference.memo = memo
+end
+
 --[[
   Moves chips between two stacks (stack/bet, stack/exchange, bet/pot, etc.)
   Handles positioning and modifying metadata for the chips.

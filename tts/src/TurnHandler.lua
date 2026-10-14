@@ -124,5 +124,18 @@ end
   }
 ]]
 function onChipExchange(params)
-  log("TurnManager.onChipExchange not implemented", "Not implemented", "[ERROR]")
+  local data = params.data
+  local onFinish_params = params.onFinish_params
+
+  local params = {
+    data            = data,
+    onFinish_params = ExternalScript_onFinish_params
+  }
+  lockExternalScriptMutex()
+  PlayerManager.call("animateExchangeChips", params)
+
+  Wait.condition(
+    function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
+    isExternalScriptMutexUnlocked
+  )
 end
