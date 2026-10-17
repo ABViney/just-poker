@@ -158,6 +158,7 @@ local PlayerManager
 
 local Deck
 local DeckZone
+local DeckSpreadZone
 
 local card_in_transit = false
 
@@ -179,11 +180,12 @@ function onLoad()
 end
 
 function init(params)
-  BlindManager  = params.Services.BlindManager
-  PlayerManager = params.Services.PlayerManager
+  BlindManager   = params.Services.BlindManager
+  PlayerManager  = params.Services.PlayerManager
 
-  Deck = params.Objects.initial_deck
-  DeckZone = params.Zones.dealer_deck_zone
+  Deck           = params.Objects.initial_deck
+  DeckZone       = params.Zones.dealer_deck_zone
+  DeckSpreadZone = params.Zones.dealer_deck_spread_zone
   log("DeckManager initialized")
 end
 
@@ -677,5 +679,185 @@ function movePlayerCardsToReflectIntent(params)
   Wait.condition(
     function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
     noCardInTransit
+  )
+end
+
+--[[
+  Sets the order of the deck in play.
+
+  params = {
+    deck_order      = {
+      1: \d{1,2}[s|h|c|d],
+      ...
+      52: \d{1,2}[s|h|c|d]
+    },
+
+    onFinish_params = {
+      service  = <Scripting Zone>,
+      callback = string,
+      args     = any
+    }
+  }
+]]
+function setDeckOrder(params)
+  local onFinish_params = params.onFinish_params
+ 
+  CardOrder = params.deck_order
+
+  local unordered_cards = {}
+  function _findCardByMemo(memo)
+    for card in unordered_cards do
+      if card.memo == memo then return card end
+    end
+    log("\n[ERROR]\nDeckManager.setDeckOrder:\nFailed to find card with memo: "..memo)
+  end
+
+  --[[
+    TODO:
+    There are 2 main concerns with setting the order of the deck:
+      1. The deck cannot be re-ordered without taking the cards 
+        out of the deck.
+      2. The built-in `spread()` function forces the cards face
+        up when splayed.
+
+      The first issue isn't a major concern--I can flip the cards
+      before re-creating the deck to obscure the order they enter
+      the deck.
+      The second issue is the crux--when grouping the cards, I can
+      specify the order, but not the location of where the group
+      forms. The group forms at the bottom of the deck; a sharp-
+      eyed participant can feasibly identify which card is at the
+      bottom of the deck, giving them additional information they
+      shouldn't have.
+
+      There are a couple options I have to remedy this:
+        1. Use `attachHider` or `setHiddenFrom` to obscure the 
+         deck and cards from all players before spreading.
+        --> (Currently using this approach)
+
+        2. Re-implement the `spread()` function to splay out cards
+          face-down. (Last resort)
+  ]]
+  local hide_from_table = PlayerManager.call("getSeats")
+  local sort_deck_parameters = {
+    {
+      func = function()
+        Deck.shuffle()
+      end,
+      post_delay_seconds = 0.18,
+      log_message = "Shuffling deck to obscure previously dealt cards"
+    },
+    {
+      func = function()
+        Deck.setPositionSmooth(
+          DeckSpreadZone.getPosition(), false, true
+        )
+        Deck.setRotationSmooth(
+          DeckSpreadZone.getRotation(), false, true
+        )
+      end,
+      post_delay_seconds = 0.5,
+      log_message = "Moving deck to spread zone."
+    },
+    {
+      func = function()
+        -- This should solve any concern of players being able to 
+        -- get any more information out of the deck being spread 
+        -- without reimplementing the spread function.
+        Deck.setHiddenFrom(hide_from_table) -- Hide the deck before it is flipped by default spread
+        unordered_cards = Deck.spread(0.6)
+        for card in unordered_cards do
+          card.setHiddenFrom(hide_from_table) -- Hide the cards (1 frame) after the spread function is called.
+        end
+      end,
+      post_delay_seconds = 2.4,
+      log_message = "Spreading deck"
+    },
+    {
+      func = function()
+        -- For some reason, spread puts cards face up
+        for card in unordered_cards do
+          card.flip()
+        end
+      end,
+      post_delay_seconds = 0.5,
+      log_message = "Flipping exposed cards"
+    },
+    {
+      func = function()
+        local card_to_move = _findCardByMemo(CardOrder[#CardOrder])
+        -- Preceeding the group(...) operation with this causes the deck to
+        -- form in the center of the table. Not sure why--I think it has to
+        -- do with interrupting the movement--since it isn't instantaneous.
+        -- But happy side-effect: the deck forms in a consistent location.
+        -- If I want the deck to form elsewhere, the post_delay_seconds will 
+        -- need to be increased.
+        card_to_move.setPosition({0,0,0})
+      end,
+      post_delay_seconds = 0.00,
+      log_message = "Moving bottom card to a consistent position"
+    },
+    {
+      func = function()
+        local ordered_cards = {}
+        -- Because the first index is where the group is formed, the last must 
+        -- be where the stack is formed, and the first card is the last added
+        for i=#CardOrder, 1, -1 do
+          local rank_suit = CardOrder[i]
+          table.insert(ordered_cards, _findCardByMemo(rank_suit))
+        end
+        group(ordered_cards)
+      end,
+      post_delay_seconds = 0.75,
+      log_message = "Sorting deck by card order."
+    },
+    {
+      func = function()
+        Deck.setPositionSmooth(
+          DeckZone.getPosition(), false, true
+        )
+        Deck.setRotationSmooth(
+          DeckZone.getRotation(), false, true
+        )
+      end,
+      post_delay_seconds = 0.5,
+      log_message = "Returning deck to dealer."
+    },
+    {
+      func = function()
+        onFinish_params.service.call(onFinish_params.callback, onFinish_params.args)
+      end,
+      post_delay_seconds = 0,
+      log_message = "Releasing caller mutex"
+    }
+  }
+
+  Wait.frames(
+    function()
+      local index = 1
+        for i=1, #sort_deck_parameters do
+          local setup_index = i
+          Wait.condition(
+            function()
+              -- Unwrapping
+              local func               = sort_deck_parameters[index].func
+              local post_delay_seconds = sort_deck_parameters[index].post_delay_seconds
+              local log_message        = sort_deck_parameters[index].log_message
+              
+              log(log_message)
+              func()
+              
+              Wait.time(
+                function()
+                  index = index + 1
+                end,
+                post_delay_seconds
+              )
+            end,
+            function() return index == setup_index end
+          )
+        end
+    end,
+    1
   )
 end

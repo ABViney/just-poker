@@ -62,6 +62,7 @@ function onLoad()
     chip_exchange_zone           = getObjectFromGUID("7734f1"), -- Where players put chips to exchange
     chip_exchange_stack_zone     = getObjectFromGUID("135c3d"), -- Where chips are stacked after a player-authed exchanged
     dealer_deck_zone             = getObjectFromGUID("22b504"),
+    dealer_deck_spread_zone      = getObjectFromGUID("49a960"),
     pot_zone                     = getObjectFromGUID("cac241"),
     pot_stack_zone               = getObjectFromGUID("8a44ce")
   }
