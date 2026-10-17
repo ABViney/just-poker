@@ -147,16 +147,19 @@ local EVENT_SUBSCRIPTIONS = {
 function subscribe(params)
   local event_type = params.event_type
   local callback_params = params.callback_params
-
+  local log_message
   if not event_type then
-    log({"No event_type provided", "EventBus.createSubscription"}, "[ERROR]", false, true)
+    log_message = "\n"..logString({"No event_type provided", "EventBus.createSubscription"}, "[ERROR]", false, true)
+    log(log_message)
     return
   end
   if not EVENT_SUBSCRIPTIONS[event_type] then
-    log({"No publisher of " .. event_type .. " found"}, "EventBus.createSubscription", "[WARNING]", false, true)
+    log_message = "\n"..logString({"No publisher of " .. event_type .. " found"}, "EventBus.createSubscription", "[WARNING]", false, true)
+    log(log_message)
   end
   if not callback_params then
-    log({"Cannot subscribe to "..event_type.." without providing a callback"}, "EventBus.createSubscription", "[ERROR]", false, true)
+    log_message = "\n"..logString({"Cannot subscribe to "..event_type.." without providing a callback"}, "EventBus.createSubscription", "[ERROR]", false, true)
+    log(log_message)
     return
   end
 
@@ -165,7 +168,8 @@ function subscribe(params)
   end
 
   table.insert(EVENT_SUBSCRIPTIONS[event_type], callback_params)
-  log(callback_params.service, "Subscription to "..event_type.." created", "[INFO]", false, true)
+  log_message = "\n"..logString(callback_params.service, "Subscription to "..event_type.." created", "[INFO]", false, true)
+  log(log_message)
 end
 
 --[[
@@ -184,13 +188,17 @@ end
   }
 ]]
 function publish(params)
+  local log_message
   if not params.event_type then
-    log("Missing params.event_type", "EventBus.publish", "[WARNING]", false, true)
+    log_message = "\n"..logString("Missing params.event_type", "EventBus.publish", "[WARNING]", false, true)
+    log(log_message)
   end
   if not EVENT_SUBSCRIPTIONS[params.event_type] then
-    log("Event ["..params.event_type.."] has no subscribers", "EventBus.publish", "[WARNING]", false, true)
+    log_message = "\n"..logString("Event ["..params.event_type.."] has no subscribers", "EventBus.publish", "[WARNING]", false, true)
+    log(log_message)
   end
-  log("[EventBus.publish]: Publishing " .. params.event_type)
+  log_message = "\n"..logString("[EventBus.publish]: Publishing " .. params.event_type)
+  log(log_message)
   publishToSubscribers(EVENT_SUBSCRIPTIONS[params.event_type], params.data)
 
   --[[
@@ -235,7 +243,8 @@ function publishToSubscribers(callback_params_array, data)
     Wait.condition(
       function()
         lockExternalScriptMutex()
-        log(callback_params, "Publishing to: ", "", false, true)
+        local log_message = "\n"..logString(callback_params, "Publishing to: ", "", false, true)
+        log(log_message)
         -- When this callback finishes, it will unlock the mutex, incrementing the index and allowing the next callback to be invoked
         callback_params.service.call(callback_params.callback, {data=data, onFinish_params=onFinishExternalScript_params})
         -- Once all callbacks have returned, the associated mutex isNotCurrentlyIteratingCallbacks is unlocked.
@@ -356,7 +365,8 @@ function dataIsValid(data_type, data)
   end
 
   if not data_is_valid then
-    log(errors, "Errors validating hand_start: ", "", false, true)
+    local log_message = "\n"..logString(errors, "Errors validating hand_start: ", "", false, true)
+    log(log_message)
     return false
   end
   return true
