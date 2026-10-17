@@ -10,11 +10,13 @@
 local BlindManager
 local DeckManager
 local TurnManager
+local ServerClientConnection
 
 function init(params)
-  BlindManager  = params.Services.BlindManager
-  DeckManager   = params.Services.DeckManager
-  EventBus      = params.Services.EventBus
+  BlindManager           = params.Services.BlindManager
+  DeckManager            = params.Services.DeckManager
+  EventBus               = params.Services.EventBus
+  ServerClientConnection = params.Services.ServerClientConnection
 
   EventBus.call("subscribe", {
     event_type        = "hand_started",
@@ -30,19 +32,66 @@ do -- Config
   HAND_END_DELAY    = 2
 end
 
+local SORTING_DECK_MUTEX_INDEX       = "sorting deck"
+local deckOrderReceived_params       = {
+  service = self,
+  callback = "onDeckOrderReceived"
+}
+
+do -- Mutex
+
+  local associative_mutex = {}
+  function lockAssociativeMutex(index) associative_mutex[index] = true end
+  function unlockAssociativeMutex(index) associative_mutex[index] = false end
+  function isAssociativeMutexUnlocked(index) return not associative_mutex[index] end
+
+end
+
 --[[
   
   When a hand starts, the buttons are configured.
   The big/small blinds are repositioned and may have a new cost.
   The dealer button is also repositioned.
   
-  params: See EventBus.onHandStart
+  params = {
+    data = {
+      id                   = int,
+      big_blind_cost       = int,
+      big_blind_position   = int,
+      small_blind_cost     = int,
+      small_blind_position = int,
+      button_position      = int
+    },
+
+    onFinish_params = {
+      service  = <Scripting Zone>,
+      callback = string,
+      args     = any
+    }
+  }
 ]]
 function onHandStarted(params)
   local data = params.data
   local onFinish_params = params.onFinish_params
 
+  local log_message = logString(params.data, "nHandHandler.onHandStarted", "[INFO]", false, true)
+  log(log_message)
+
+  BlindManager.call("configureButtonsFromHandStart", data)
+
   
+  --[[
+    The order of the deck is available to fetch after a hand starts.
+  ]]
+  -- NOTE: Sometimes requests seem to "hang". Not sure if they get lost or why,
+  -- but I might want to consider putting retry logic here.
+  lockAssociativeMutex(SORTING_DECK_MUTEX_INDEX)
+  Wait.time(
+    function()
+      ServerClientConnection.call("getDeckOrder", deckOrderReceived_params)
+    end,
+    0.5
+  )
 
   --[[
     Configuration of the buttons is technically instantaneous, though
@@ -51,11 +100,53 @@ function onHandStarted(params)
     same time, we provide a reasonable delay for this transformation to 
     occur.
   ]]
-
-  BlindManager.call("configureButtonsFromHandStart", data)
-  broadcastToAll("Starting hand #"..data.id, "White")
-  Wait.time(
-    function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
-    HAND_START_DELAY
+  Wait.condition(
+    function()
+      broadcastToAll("Starting hand #"..data.id, "White")
+      Wait.time(
+        function()
+          log("EVENT BUS MUTEX SHOULD HAVE BEEN RELEASED HERE")
+          onFinish_params.service.call(onFinish_params.callback)
+        end,
+        HAND_START_DELAY
+      )
+    end,
+    function() return isAssociativeMutexUnlocked(SORTING_DECK_MUTEX_INDEX) end
   )
+end
+
+-- function testGetDeckOrder()
+--   log("\nHandHandler.testGetDeckOrder:\nFetching deck order")
+--   lockAssociativeMutex("sorting deck")
+--   ServerClientConnection.call("getDeckOrder", deckOrderReceived_params)
+-- end
+
+function onDeckOrderReceived(serialized_deck_order)
+  -- Need to normalize the entries
+  if serialized_deck_order == nil then
+    Wait.frames(
+      function()
+        -- TODO: have some recovery logic
+        local log_message = logString("Failed to fetch deck order", "HandHandler.onDeckOrderReceived", "[ERROR]", false, true)
+        log(log_message)
+      end,
+      1
+    )
+    return
+  end
+
+  local normalized_deck_order = {}
+  for card in serialized_deck_order do
+    table.insert(normalized_deck_order, string.char(card.rank, card.suit))
+  end
+
+  local sortDeckOrder_params = {
+    deck_order = normalized_deck_order,
+    onFinish_params = {
+      service  = self,
+      callback = "unlockAssociativeMutex",
+      args     = SORTING_DECK_MUTEX_INDEX
+    }
+  }
+  DeckManager.call("setDeckOrder", sortDeckOrder_params)
 end
