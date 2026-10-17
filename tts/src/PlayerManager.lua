@@ -288,6 +288,10 @@ end
 --]]
 do
 
+function getSeats()
+  return {table.unpack(SEATS)}
+end
+
 function getPlayers()
   return {table.unpack(PLAYERS)}
 end
