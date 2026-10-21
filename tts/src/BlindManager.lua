@@ -58,7 +58,8 @@ end
   Configure the blinds from parsed data.
 --]]
 function configureButtonsFromHandStart(data)
-  log("Configuring buttons")
+  local log_message = logString(data, "ButtonManager.configureBlindsFromCurrentHand", "[INFO]", false, true)
+  log(log_message)
   BigBlind.setName("$" .. data.big_blind_cost)
   BigBlind.memo = data.big_blind_cost
   SmallBlind.setName("$" .. data.small_blind_cost)

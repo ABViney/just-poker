@@ -31,6 +31,10 @@ Carriage return / newline = &#13;&#10;
   />
 </Defaults>
 
+<!--                     -->
+<!-- GAME MASTER SECTION -->
+<!--                     -->
+
 <!--
   Game configuration menu for the Game Master
   This menu is used by the Game Master to:
@@ -143,6 +147,49 @@ Carriage return / newline = &#13;&#10;
     </VerticalLayout>
     <!-- Start game -->
 </Panel>
+
+<!--                            -->
+<!-- END OF GAME MASTER SECTION -->
+<!--                            -->
+
+<!--                -->
+<!-- DEALER SECTION -->
+<!--                -->
+
+<Panel id="DealerContextMenu"
+  class="floating-panel"
+  width="200" height="400"
+  rectAlignment="MiddleRight"
+  
+  showAnimation="SlideIn_Left"
+  hideAnimation="SlideOut_Left"
+
+  visibility="White|Black" 
+>
+  <VerticalLayout
+  >
+    <Panel
+      width="200" height="400"
+    >
+      <Text>Put data about the current hand here</Text>
+    </Panel>
+  <!-- Button that shows up when it is time to start a new hand -->
+    <Panel
+      width="100" height="40">
+      <Button
+        width="100" height="40"
+
+        onClick="onStartHandButtonPressed"
+      >
+        Start Hand
+      </Button>
+    </Panel>
+  </VerticalLayout>
+</Panel>
+
+<!--                       -->
+<!-- END OF DEALER SECTION -->
+<!--                       -->
 
 <!-- <Defaults>
   <Panel class="TurnPanel"

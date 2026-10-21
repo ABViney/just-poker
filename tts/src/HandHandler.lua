@@ -9,6 +9,8 @@
 
 local BlindManager
 local DeckManager
+local EventBus
+local GameStateHandler
 local TurnManager
 local ServerClientConnection
 
@@ -16,6 +18,8 @@ function init(params)
   BlindManager           = params.Services.BlindManager
   DeckManager            = params.Services.DeckManager
   EventBus               = params.Services.EventBus
+  GameStateHandler       = params.Services.GameStateHandler
+
   ServerClientConnection = params.Services.ServerClientConnection
 
   EventBus.call("subscribe", {
@@ -85,13 +89,15 @@ function onHandStarted(params)
   ]]
   -- NOTE: Sometimes requests seem to "hang". Not sure if they get lost or why,
   -- but I might want to consider putting retry logic here.
-  lockAssociativeMutex(SORTING_DECK_MUTEX_INDEX)
-  Wait.time(
-    function()
-      ServerClientConnection.call("getDeckOrder", deckOrderReceived_params)
-    end,
-    0.5
-  )
+  if GameStateHandler.getVar("GAME_ID") ~= "0" then -- Debug line. If GAME_ID is 0 then we're using playback data and the order of the deck is innaccessible.
+    lockAssociativeMutex(SORTING_DECK_MUTEX_INDEX)
+    Wait.time(
+      function()
+        ServerClientConnection.call("getDeckOrder", deckOrderReceived_params)
+      end,
+      0.5
+    )
+  end
 
   --[[
     Configuration of the buttons is technically instantaneous, though

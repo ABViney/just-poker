@@ -6,6 +6,7 @@ CHIP_DENOMINATIONS = {["1000"] = 0, ["500"] = 0, ["100"] = 0, ["50"] = 0, ["10"]
 
 GAME_STATE_LOADED = false
 
+local POKER_SERVICE_ENDPOINT
 local GAMEMASTER_AUTH_TOKEN
 local GAME_ID
 
@@ -108,8 +109,8 @@ function onLoad()
   local get_deck_order = getObjectFromGUID("71225f")
   get_deck_order.createButton({
     label=          "Get deck order",
-    click_function= "getCardsInDeck",
-    function_owner= Services.DeckManager,
+    click_function= "testGetDeckOrder",
+    function_owner= Services.HandHandler,
     position=       {0, 0.5, 1},
     height=300, width=1000, font_size=100
   })
@@ -126,10 +127,12 @@ end
 
 function onUpdate() end
 
+--[[
+  GAME CONFIG UI
 
-do -- Game Config UI
-
-
+  The game master handles setting up and starting the game.
+  These controls 
+]]
 local listener_endpoint
 
 function onListenToGameServerAuthEndEdit(_, value, id)
@@ -147,14 +150,52 @@ function onListenToGameIdButtonPressed()
     return
   end
 
-  local poker_service_endpoint = "https://game.bahms.org/api/poker/game/".. GAME_ID .. "/state/listen"
-
-  printToColor("Attempting to connect to " .. poker_service_endpoint , "Black", "Grey")
+  printToColor("Attempting to connect to game #"..GAME_ID , "Black", "Grey")
   local params = {
-    server_endpoint = poker_service_endpoint,
+    game_id = GAME_ID,
     auth_token = GAMEMASTER_AUTH_TOKEN
   }
   Services.ServerClientConnection.call("createEventListener", params)
 end
+--[[
+  END GAME CONFIG UI
+]]
 
+--[[
+  DEALER UI
+
+  The dealer gets an overview of information regarding the current hand.
+  Any tools they need (like for starting the next hand) will be located here.
+]]
+
+
+--[[
+  This callback just informs me the result of the call to get the deck
+  order.
+
+  web_response_result = {
+    success = boolean,
+    status  = int,
+    body    = {
+      data = {
+        error      = string,
+        error_code = int
+      }
+    } or {} if success is `true`
+  }
+]]
+function _startNextHandResponseCallback(web_response_result)
+  -- TODO: The ServerClient.startNextHand function should return 
+  -- a table with information
+  local log_message = logString(web_response_result, "Global._startNextHandResponseCallback", "[INFO]", false, true)
+  log("\n"..log_message )
+end
+
+function onStartHandButtonPressed()
+  local startNextHand_params = {
+    service  = self,
+    callback = "_startNextHandResponseCallback",
+  }
+  log("Attempting to start next hand")
+  Services.ServerClientConnection.call("startNextHand", startNextHand_params)
 end
