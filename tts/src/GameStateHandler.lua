@@ -1,11 +1,12 @@
 
 local BlindManager
-local ChipManager
 local DeckManager
-local DealerDeckZone
+local EventBus
+local Logger
 local PlayerManager
 local PotManager
-local EventBus
+
+GAME_ID = nil
 
 --[[
     Ran into an issue where I couldn't access the PotManager by
@@ -16,9 +17,9 @@ local EventBus
 ]]
 function init(params)
     BlindManager    = params.Services.BlindManager
-    ChipManager     = params.Services.ChipManager
-    EventBus        = params.Services.EventBus
     DeckManager     = params.Services.DeckManager
+    EventBus        = params.Services.EventBus
+    Logger          = params.Services.ExternalLogConnection
     PlayerManager   = params.Services.PlayerManager
     PotManager      = params.Services.PotManager
 
@@ -91,6 +92,10 @@ function onWelcome(params)
     return
   end
 
+  if GAME_ID == nil then
+    GAME_ID = params.data.id
+  end
+  
   -- If the state was provided by the welcome message, all players may not have joined yet.
   -- If so, the game hasn't started yet and we can back out and wait for the "game_start"
   -- event to get a more complete view of the table.
@@ -101,7 +106,7 @@ function onWelcome(params)
       function() onFinish_params.service.call(onFinish_params.callback) end,
       2
     )
-    
+
     return
   end
   onGameStateReceived(params)
@@ -125,6 +130,10 @@ end
 function onGameStateReceived(params)
   local data = params.data
   local onFinish_params = params.onFinish_params
+
+  if GAME_ID == nil then
+    GAME_ID = data.id
+  end
 
   if GAME_IN_PROGRESS then
     -- We don't get events specifically for when a player is out
