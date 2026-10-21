@@ -12,10 +12,14 @@
   of one.
 ]]
 
+local GameStateHandler
+local Logger
 local EventBus
 
 function init(params)
-  EventBus = params.Services.EventBus
+  GameStateHandler = params.Services.GameStateHandler
+  EventBus         = params.Services.EventBus
+  Logger           = params.Services.ExternalLogConnection
 
   log("ServerClientConnection initialized")
 end
@@ -37,7 +41,7 @@ do -- Connection configuration
   This value will either be read from the host or inferred from the response when 
   creating a game.
 ]]
-local GAME_ID = nil
+GAME_ID = nil
 function getGameId() return GAME_ID end
 
 --[[
@@ -47,17 +51,25 @@ function getGameId() return GAME_ID end
 
   Note: Requires a Twitch account.
 ]]
-local AUTH_TOKEN = nil
+AUTH_TOKEN = nil
+
+HEADERS = {}
 
 --[[
   This mod, and the poker server it uses, are both open source. You can deploy
   or fork your own if ours doesn't meet your needs:
   https://github.com/just-jane-inc/just-poker
 ]]
-local POKER_SERVICE_ENDPOINT = nil
+DEFAULT_POKER_SERVICE_ENDPOINT = "https://game.bahms.org/api/poker/game/{game_id}/state/listen"
+POKER_SERVICE_ENDPOINT = nil
+
+DEFAULT_START_HAND_ENDPOINT = "https://game.bahms.org/api/poker/game/{game_id}/hand"
+START_HAND_ENDPOINT = nil
+
+DEFAULT_DECK_ORDER_ENDPOINT = "https://game.bahms.org/api/poker/game/{game_id}/deck"
+DECK_ORDER_ENDPOINT = nil
 
 end -- Connection configuration
-
 
 
 -- All JSON serialized messages received from polling are indexed by the order they are received.
@@ -70,12 +82,35 @@ local CURRENT_EVENT_INDEX = 0
 -- All parsed messages that are awaiting to be processed
 local EVENT_QUEUE = {}
 
-function setup()
-  MESSAGE_QUEUE = {}
-  -- MESSAGE_QUEUE = PREFAB_EVENT_QUEUE -- DEBUG LINE
-  CURRENT_EVENT_INDEX = 1
-  EVENT_QUEUE = {}
 
+--[[
+  Sets global variables used for connecting to a game.  
+
+  params = {
+    server_endpoint = string,
+    game_id         = string,
+    auth_token      = string
+  }
+]]
+function setup(params)
+  POKER_SERVICE_ENDPOINT = string.gsub(DEFAULT_POKER_SERVICE_ENDPOINT, "{game_id}", params.game_id)
+  DECK_ORDER_ENDPOINT    = string.gsub(DEFAULT_DECK_ORDER_ENDPOINT, "{game_id}", params.game_id)
+  START_HAND_ENDPOINT    = string.gsub(DEFAULT_START_HAND_ENDPOINT, "{game_id}", params.game_id)
+  
+  GAME_ID                = params.game_id
+  GameStateHandler.setVar("GAME_ID", GAME_ID)
+  
+  AUTH_TOKEN             = params.auth_token
+  HEADERS = {["Authorization"] = "Bearer "..AUTH_TOKEN}
+
+  MESSAGE_QUEUE          = {}
+  CURRENT_EVENT_INDEX    = 1
+  EVENT_QUEUE            = {}
+  
+  if GAME_ID == "0" then -- Debug line. If GAME_ID is 0 then we use playback data
+    log("Using playback data")
+    MESSAGE_QUEUE = PREFAB_EVENT_QUEUE -- DEBUG LINE
+  end
 end
 
 --[[
@@ -96,39 +131,41 @@ end
 ]]
 function createEventListener(params)
   log("Setting up server-client connection")
-  setup()
+  setup(params)
 
-  local poker_service_endpoint = params.server_endpoint
-  local auth_token = params.auth_token
+  log(params)
 
-  WebRequest.custom(
-    poker_service_endpoint,
-    "POST",
-    true,                               -- I AM handling the response body
-    "",                                 -- Body is an empty string
-    {["Authorization"] = "Bearer "..auth_token}, -- headers
-    function(instance)                  -- callback_function
-      -- instance is the web request instance after we've gotten a response
-      
-      if instance.is_error then
-        local message = "Connection failed: " .. instance.response_code .. "\n" .. instance.text
-        printToColor(
-          message,
-          "Black",
-          "Grey"
-        )
-        return
-      else
-        local response_code = instance.response_code
-        local initialization_response = instance.text
-        log("Listener initialized")
-
-        local body = logString(instance.text)
-        log("Response code: " .. response_code .. '\n' .. body, "Connecting to listener", "[INFO]", false, true)
-
-        pollEvents(1, poker_service_endpoint, auth_token)
-      end
-  end)
+  if GAME_ID ~= "0" then -- Debug check. If GAME_ID is 0 then we use playback data
+    WebRequest.custom(
+      POKER_SERVICE_ENDPOINT,
+      "POST",
+      true,                               -- I AM handling the response body
+      "",                                 -- Body is an empty string
+      HEADERS,                            -- headers
+      function(instance)                  -- callback_function
+        -- instance is the web request instance after we've gotten a response
+        
+        if instance.is_error then
+          local message = "Connection failed: " .. instance.response_code .. "\n" .. instance.text
+          printToColor(
+            message,
+            "Black",
+            "Grey"
+          )
+          return
+        else
+          local response_code = instance.response_code
+          local initialization_response = instance.text
+          log("Listener initialized")
+          _logServerMessage(initialization_response)
+  
+          local body = logString(instance.text)
+          log("Response code: " .. response_code .. '\n' .. body, "Connecting to listener", "[INFO]", false, true)
+  
+          pollEvents(1)
+        end
+    end)
+  end
 
   -- pollEvents, processMessages, and processEvents should all operate independently and asynchronously.
   processMessages(1)
@@ -141,51 +178,70 @@ end
 
   index = int (Where in the message_queue this web request's response is stored)
 ]]
-function pollEvents(index, poker_service_endpoint, auth_token)
-  log({index=index, poker_service_endpoint=poker_service_endpoint, auth_token=auth_token})
+function pollEvents(index)
+  local log_message = logString("Polling Event #"..index.."...", "ServerClientConnection.pollEvents", "[INFO]", false, true)
+  log("\n"..log_message)
+
   WebRequest.custom(
-    poker_service_endpoint,
-    -- 'https://api.bahms.org/v1/badges/1', -- DEBUG
+    POKER_SERVICE_ENDPOINT,
     "GET",
     true,                               -- I AM handling the response body
-    nil,                                 -- Data I'm sending in the body
-    {["Authorization"] = "Bearer " .. auth_token}, -- headers
-
+    nil,                                -- Data I'm sending in the body
+    HEADERS,                             -- headers
 
     function(instance)
       -- Expected errors: 504 (server timeout) and 502 (listener closed)
       if instance.is_error then
+        local error = {
+          status = instance.response_code,
+          error  = instance.error,
+        }
+        local log_message = logString(error, "ServerClientConnection.pollEvents ("..index..")", "[ERROR]", false, true)
+        log("\n"..log_message)
 
-        if instance.status_code == 504 then
-          -- 504 is sent when the server timed out our request.
-          -- Tabletop Simulator's WebRequest API doesn't have a TTL, in resposne to this we just need to poll again.
-          Wait.time(
+        Wait.time(
           function()
-            pollEvents(index, poker_service_endpoint, auth_token)
+            pollEvents(index)
           end,
           0.1
-          )
-          return
-        elseif instance.status_code == 502 then
-          -- 502 is sent when the server no longer holds a reference for that game.
-          -- This notifies us that the game is over and that we will no longer receive events for this game_id.
-          log(instance.text, "Server has closed listener.", "[ERROR]", false, true)
-          return
-        else
-          -- The only response codes we should be getting are 200, 502, and 504.
-          log("["..instance.status_code.."]\n"..instance.text, "Unknown response status code: ", "[WARNING]")
-          return
-        end
+        )
       end
 
+      if instance.response_code == 504 then
+        -- 504 is sent when the server timed out our request.
+        -- Tabletop Simulator's WebRequest API doesn't have a TTL, in resposne to this we just need to poll again.
+        Wait.time(
+          function()
+            pollEvents(index)
+          end,
+          0.1
+        )
+        return
+      elseif instance.response_code == 502 then
+        -- 502 is sent when the server no longer holds a reference for that game.
+        -- This notifies us that the game is over and that we will no longer receive events for this game_id.
+        local log_message = logString("Server has closed listener.", "ServerClientConnection.pollEvents ("..index..")", "[INFO]", false, true)
+        log("\n"..log_message)
+        return
+      elseif instance.response_code >= 400 then
+        -- The only response codes we should be getting are 200, 502, and 504.
+        local log_message = logString("Unhandled response status ("..instance.response_code..")", "ServerClientConnection.pollEvents ("..index..")", "[CRITICAL]")
+        log("\n"..log_message)
+        return
+      end
+
+      -- The reponse body should not have any HTML in it.
       if instance.text == nil or string.find(instance.text, "<html>") then
-        log({[instance.response_code] = instance.text or "nil"}, "[ServerClientConnection.pollEvents] Got some weird, third kind of response.", "[CRITICAL]", false, true)
+        local log_message = logString({[instance.response_code] = instance.text or "nil"}, "ServerClientConnection.pollEvents ("..index..") Got some weird, third kind of response.", "[CRITICAL]", false, true)
+        log("\n"..log_message)
+        return
       end
 
       -- A successful status message gives us data that we may need to act on.
       -- Messages are stored to be eventually fielded by "processMessages"
       MESSAGE_QUEUE[index] = instance.text
-      pollEvents(index+1, poker_service_endpoint, auth_token)
+      _logServerMessage(instance.text)
+      pollEvents(index+1)
     end
   )
 end
@@ -221,10 +277,10 @@ function processEvents(index)
   ]]
   Wait.condition(
     function()
-      log("Processing event #" .. index)
-
       local payload = EVENT_QUEUE[index]
       if payload and payload.event_type then
+        local log_message = logString("Processing event #"..payload.id.." ["..payload.event_type.."]", "ServerClientConnection.processEvents", "[INFO]", false, true)
+        log(log_message)
         local params = {
           event_type      = payload.event_type,
           data            = payload.data,
@@ -249,178 +305,198 @@ function processEvents(index)
   )
 end
 
-function payloadCanBePublished(payload)
-  if payload and payload.event_type then
-    return true
-  else
-    return false
+--[[
+  Informs the server to start the next hand.
+
+  onFinish_params = {
+    service  = <Scripting Zone>,
+    callback = string,
+    args     = any
+  }
+]]
+function startNextHand(onFinish_params)
+  if GAME_ID == nil then
+    onFinish_params.service.call(onFinish_params.callback, {
+      success = false,
+      status = 0,
+      body = {
+        data = {
+          error = "Not listening to a game",
+          error_code = 67
+        }
+      }
+    })
+    return
   end
+
+  WebRequest.custom(
+    START_HAND_ENDPOINT,
+    "POST",
+    true,
+    "{}",
+    HEADERS,
+
+    function(instance)
+      -- Expected errors: 504 (server timeout) and 502 (listener closed)
+      if instance.is_error then
+        local error = {
+          status = instance.response_code,
+          error  = instance.error,
+        }
+        local log_message = logString(error, "ServerClientConnection.startNexthand", "[ERROR]", false, true)
+        log("\n"..log_message)
+
+      end
+
+      if instance.response_code == 400 then
+        -- Bad request. Probably called this while in the middle of another hand.
+        local log_message = logString("Response status: "..instance.response_code, "ServerClientConnection.startNextHand", "[WARNING]", false, true)
+        log("\n"..log_message)
+        return;
+      elseif instance.response_code == 504 then
+        -- 504 is sent when the server timed out our request.
+        local log_message = logString("Response status: "..instance.response_code.."\nRequest timed out.", "ServerClientConnection.startNextHand", "[WARNING]", false, true)
+        log("\n"..log_message)
+        return
+      elseif instance.response_code == 502 then
+        -- 502 is sent when the server no longer holds a reference for that game.
+        -- This notifies us that the game is over and that we will no longer receive events for this game_id.
+        local log_message = logString("Response status: "..instance.response_code.."\nGame no longer valid.", "ServerClientConnection.startNextHand", "[WARNING]", false, true)
+        log("\n"..log_message)
+        return
+      elseif instance.response_code >= 400 then
+        -- The only response codes we should be getting are 200, 502, and 504.
+        local log_message = logString("Unhandled response status: "..instance.response_code, "ServerClientConnection.startNextHand", "[ERROR]", false, true)
+        log("\n"..log_message)
+        return
+      end
+
+      local web_response_result = {
+        success = not instance.is_error,
+        status_code = instance.response_code,
+        body = JSON.decode(instance.text)
+      }
+
+      log("\nServerClientConnection.startNextHand\nNext hand started.\n")
+      onFinish_params.service.call(onFinish_params.callback, web_response_result)
+    end
+  )
+end
+
+--[[
+  Fetches the order of the deck for the current GAME_ID for the current hand in the deck.
+  Assumes the deck being fetched is for the game being listened to.
+
+  The response from the server, if it is JSON, is serialized and passed to the callback provided
+  by the caller.
+
+  Because WebRequest in Tabletop Simulator is not synchronous, the content of the response body cannot
+  be returned at the same time the function returns. The caller's callback must accept the serialized
+  response in order for this function to be useful.
+
+  onDeckOrderReceived_params = {
+    service  = <Scripting Zone>,
+    callback = string 
+  }
+]]
+function getDeckOrder(deckOrderReceived_params)
+  if GAME_ID == nil then
+    deckOrderReceived_params.service.call(deckOrderReceived_params.callback, nil)
+    return
+  end
+
+  WebRequest.custom(
+    DECK_ORDER_ENDPOINT,
+    "GET",
+    true,
+    nil,
+    HEADERS,
+
+
+    function(instance)
+      -- Expected errors: 504 (server timeout) and 502 (listener closed)
+      if instance.is_error then
+        
+        if instance.status_code == 504 then
+          -- 504 is sent when the server timed out our request.
+          -- Tabletop Simulator's WebRequest API doesn't have a TTL, in resposne to this we just need to poll again.
+          log("ServerClientConnection.getDeckOrder\n504 error on GET deck order")
+          return
+        elseif instance.status_code == 502 then
+          -- 502 is sent when the server no longer holds a reference for that game.
+          -- This notifies us that the game is over and that we will no longer receive events for this game_id.
+          log("ServerClientConnection.getDeckOrder\n502 error on GET deck order")
+          return
+        else
+          -- The only response codes we should be getting are 200, 502, and 504.
+          log("ServerClientConnection.getDeckOrder\n"..instance.status_code.." error on GET deck order")
+          return
+        end
+      end
+
+      if instance.text == nil or string.find(instance.text, "<html>") then
+        local log_message = logString({[instance.response_code] = instance.text or "nil"}, "[ServerClientConnection.getDeckOrder] Got some weird, fifth kind of response.", "[CRITICAL]", false, true)
+        log("\n"..log_message)
+        return
+      end
+
+
+      local body = JSON.decode(instance.text)
+
+      -- A successful status message gives us data that we may need to act on.
+      -- Messages are stored to be eventually fielded by "processMessages"
+      deckOrderReceived_params.service.call(deckOrderReceived_params.callback, body.data)
+    end
+  )
+
+end
+
+function _logServerMessage(message)
+  local logMessage_params = {
+    game_id = GAME_ID,
+    file    = "events",
+    level   = "INFO",
+    message = message
+  }
+  Logger.call("logMessage", logMessage_params)
 end
 
 -- Preloaded data for testing that the finished game CAN play out a hand
 PREFAB_EVENT_QUEUE = {
-[[{"id":0,"time_sent":"2026-09-25T10:05:30.675655931Z","event_type":"welcome","data":{"id":"4217","started_at":null,"ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[],"pot":{},"street":[],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":0},"current_hand":{"id":0,"big_blind":0,"small_blind":0,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":0}}}]],
-[[{"id":1,"time_sent":"2026-09-25T10:05:37.566186737Z","event_type":"hand_started","data":{"id":1,"big_blind_cost":100,"big_blind_position":0,"small_blind_cost":50,"small_blind_position":1,"button_position":1}}]],
-[[{"id":2,"time_sent":"2026-09-25T10:05:37.643868798Z","event_type":"round_started","data":{"round_type":"setup"}}]],
-[[{"id":3,"time_sent":"2026-09-25T10:05:37.713579285Z","event_type":"game_starting","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"}],"pot":{},"street":[],"current_round":{"bet":50,"current_player_position":1,"current_aggressor":1,"current_round_type":"setup"},"current_hand":{"id":1,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":4,"time_sent":"2026-09-25T10:05:37.783321268Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"}],"pot":{},"street":[],"current_round":{"bet":50,"current_player_position":1,"current_aggressor":1,"current_round_type":"setup"},"current_hand":{"id":1,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":5,"time_sent":"2026-09-25T10:05:37.857460699Z","event_type":"player_action","data":{"player_id":"109","intent":"ante","chips":{"50":1},"accepted_at":null}}]],
-[[{"id":6,"time_sent":"2026-09-25T10:05:37.926791114Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"inactive"}],"pot":{"50":1},"street":[],"current_round":{"bet":100,"current_player_position":0,"current_aggressor":1,"current_round_type":"setup"},"current_hand":{"id":1,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":7,"time_sent":"2026-09-25T10:05:37.995930574Z","event_type":"player_action","data":{"player_id":"104","intent":"ante","chips":{"100":1},"accepted_at":null}}]],
-[[{"id":8,"time_sent":"2026-09-25T10:05:38.066897758Z","event_type":"round_started","data":{"round_type":"pre_flop"}}]],
-[[{"id":9,"time_sent":"2026-09-25T10:05:38.13513134Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":51,"suit":99},{"rank":74,"suit":99}],"stack":{"10":10,"100":4,"1000":4,"50":5,"500":1},"current_bet":{"100":1},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":100},{"rank":84,"suit":99}],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"active"}],"pot":{"100":1,"50":1},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":1,"current_round_type":"pre_flop"},"current_hand":{"id":1,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":10,"time_sent":"2026-09-25T10:05:38.215507959Z","event_type":"player_action","data":{"player_id":"109","intent":"fold","chips":{},"accepted_at":null}}]],
-[[{"id":11,"time_sent":"2026-09-25T10:05:38.288236803Z","event_type":"hand_payouts","data":[{"player_id":"104","chips":{"100":1,"50":1}}]}]],
-[[{"id":12,"time_sent":"2026-09-25T10:05:38.360898141Z","event_type":"round_started","data":{"round_type":"completed"}}]],
-[[{"id":13,"time_sent":"2026-09-25T10:05:38.430090461Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":51,"suit":99},{"rank":74,"suit":99}],"stack":{"10":10,"100":5,"1000":4,"50":6,"500":1},"current_bet":{},"pot_contribution":100,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":100},{"rank":84,"suit":99}],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":50,"state":"folded"}],"pot":{},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":1,"current_round_type":"completed"},"current_hand":{"id":1,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":14,"time_sent":"2026-09-25T10:05:38.500724676Z","event_type":"hand_started","data":{"id":2,"big_blind_cost":100,"big_blind_position":1,"small_blind_cost":50,"small_blind_position":0,"button_position":0}}]],
-[[{"id":15,"time_sent":"2026-09-25T10:05:38.570107128Z","event_type":"round_started","data":{"round_type":"setup"}}]],
-[[{"id":16,"time_sent":"2026-09-25T10:05:38.639529773Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":6,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":0,"state":"inactive"}],"pot":{},"street":[],"current_round":{"bet":50,"current_player_position":0,"current_aggressor":0,"current_round_type":"setup"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":17,"time_sent":"2026-09-25T10:05:38.704930466Z","event_type":"player_action","data":{"player_id":"104","intent":"ante","chips":{"50":1},"accepted_at":null}}]],
-[[{"id":18,"time_sent":"2026-09-25T10:05:38.776222119Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"}],"pot":{"50":1},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":0,"current_round_type":"setup"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":19,"time_sent":"2026-09-25T10:05:38.849070546Z","event_type":"player_action","data":{"player_id":"109","intent":"ante","chips":{"100":1},"accepted_at":null}}]],
-[[{"id":20,"time_sent":"2026-09-25T10:05:38.918263556Z","event_type":"round_started","data":{"round_type":"pre_flop"}}]],
-[[{"id":21,"time_sent":"2026-09-25T10:05:38.987141106Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":54,"suit":104},{"rank":50,"suit":115}],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":52,"suit":99},{"rank":52,"suit":104}],"stack":{"10":10,"100":4,"1000":4,"50":4,"500":1},"current_bet":{"100":1},"pot_contribution":0,"state":"inactive"}],"pot":{"100":1,"50":1},"street":[],"current_round":{"bet":100,"current_player_position":0,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":22,"time_sent":"2026-09-25T10:05:39.057418635Z","event_type":"player_action","data":{"player_id":"104","intent":"call","chips":{"50":1},"accepted_at":null}}]],
-[[{"id":23,"time_sent":"2026-09-25T10:05:39.127099635Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":54,"suit":104},{"rank":50,"suit":115}],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{"50":2},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":52,"suit":99},{"rank":52,"suit":104}],"stack":{"10":10,"100":4,"1000":4,"50":4,"500":1},"current_bet":{"100":1},"pot_contribution":0,"state":"active"}],"pot":{"100":1,"50":2},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":24,"time_sent":"2026-09-25T10:05:39.200074894Z","event_type":"player_action","data":{"player_id":"109","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":25,"time_sent":"2026-09-25T10:05:39.270954443Z","event_type":"round_started","data":{"round_type":"flop"}}]],
-[[{"id":26,"time_sent":"2026-09-25T10:05:39.339841028Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":54,"suit":104},{"rank":50,"suit":115}],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":100,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":52,"suit":99},{"rank":52,"suit":104}],"stack":{"10":10,"100":4,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":100,"state":"active"}],"pot":{"100":1,"50":2},"street":[{"rank":50,"suit":99},{"rank":52,"suit":115},{"rank":55,"suit":104}],"current_round":{"bet":0,"current_player_position":1,"current_aggressor":1,"current_round_type":"flop"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":27,"time_sent":"2026-09-25T10:05:39.411241509Z","event_type":"player_action","data":{"player_id":"109","intent":"raise","chips":{"100":1},"accepted_at":null}}]],
-[[{"id":28,"time_sent":"2026-09-25T10:05:39.478947588Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":54,"suit":104},{"rank":50,"suit":115}],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":100,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":52,"suit":99},{"rank":52,"suit":104}],"stack":{"10":10,"100":3,"1000":4,"50":4,"500":1},"current_bet":{"100":1},"pot_contribution":100,"state":"inactive"}],"pot":{"100":2,"50":2},"street":[{"rank":50,"suit":99},{"rank":52,"suit":115},{"rank":55,"suit":104}],"current_round":{"bet":100,"current_player_position":0,"current_aggressor":1,"current_round_type":"flop"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":29,"time_sent":"2026-09-25T10:05:39.552338178Z","event_type":"player_action","data":{"player_id":"104","intent":"fold","chips":{},"accepted_at":null}}]],
-[[{"id":30,"time_sent":"2026-09-25T10:05:39.621706603Z","event_type":"hand_payouts","data":[{"player_id":"109","chips":{"100":2,"50":2}}]}]],
-[[{"id":31,"time_sent":"2026-09-25T10:05:39.696287281Z","event_type":"round_started","data":{"round_type":"completed"}}]],
-[[{"id":32,"time_sent":"2026-09-25T10:05:39.765192724Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":54,"suit":104},{"rank":50,"suit":115}],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":100,"state":"folded"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":52,"suit":99},{"rank":52,"suit":104}],"stack":{"10":10,"100":5,"1000":4,"50":6,"500":1},"current_bet":{},"pot_contribution":200,"state":"inactive"}],"pot":{},"street":[{"rank":50,"suit":99},{"rank":52,"suit":115},{"rank":55,"suit":104}],"current_round":{"bet":100,"current_player_position":0,"current_aggressor":1,"current_round_type":"completed"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":33,"time_sent":"2026-09-25T10:05:39.834308291Z","event_type":"hand_started","data":{"id":3,"big_blind_cost":100,"big_blind_position":0,"small_blind_cost":50,"small_blind_position":1,"button_position":1}}]],
-[[{"id":34,"time_sent":"2026-09-25T10:05:39.904610891Z","event_type":"round_started","data":{"round_type":"setup"}}]],
-[[{"id":35,"time_sent":"2026-09-25T10:05:39.978450328Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":6,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"}],"pot":{},"street":[],"current_round":{"bet":50,"current_player_position":1,"current_aggressor":1,"current_round_type":"setup"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":36,"time_sent":"2026-09-25T10:05:40.051205627Z","event_type":"player_action","data":{"player_id":"109","intent":"ante","chips":{"50":1},"accepted_at":null}}]],
-[[{"id":37,"time_sent":"2026-09-25T10:05:40.127943333Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"inactive"}],"pot":{"50":1},"street":[],"current_round":{"bet":100,"current_player_position":0,"current_aggressor":1,"current_round_type":"setup"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":38,"time_sent":"2026-09-25T10:05:40.202315808Z","event_type":"player_action","data":{"player_id":"104","intent":"ante","chips":{"100":1},"accepted_at":null}}]],
-[[{"id":39,"time_sent":"2026-09-25T10:05:40.274887967Z","event_type":"round_started","data":{"round_type":"pre_flop"}}]],
-[[{"id":40,"time_sent":"2026-09-25T10:05:40.34618945Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":4,"1000":4,"50":4,"500":1},"current_bet":{"100":1},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"active"}],"pot":{"100":1,"50":1},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":1,"current_round_type":"pre_flop"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":41,"time_sent":"2026-09-25T10:05:40.418373737Z","event_type":"player_action","data":{"player_id":"109","intent":"raise","chips":{"100":2},"accepted_at":null}}]],
-[[{"id":42,"time_sent":"2026-09-25T10:05:40.492430975Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":4,"1000":4,"50":4,"500":1},"current_bet":{"100":1},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":3,"1000":4,"50":5,"500":1},"current_bet":{"100":2,"50":1},"pot_contribution":0,"state":"inactive"}],"pot":{"100":3,"50":1},"street":[],"current_round":{"bet":250,"current_player_position":0,"current_aggressor":1,"current_round_type":"pre_flop"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":43,"time_sent":"2026-09-25T10:05:40.567697109Z","event_type":"player_action","data":{"player_id":"104","intent":"raise","chips":{"500":1},"accepted_at":null}}]],
-[[{"id":44,"time_sent":"2026-09-25T10:05:40.641345763Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":4,"1000":4,"50":4,"500":0},"current_bet":{"100":1,"500":1},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":3,"1000":4,"50":5,"500":1},"current_bet":{"100":2,"50":1},"pot_contribution":0,"state":"active"}],"pot":{"100":3,"50":1,"500":1},"street":[],"current_round":{"bet":600,"current_player_position":1,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":45,"time_sent":"2026-09-25T10:05:40.714173302Z","event_type":"player_action","data":{"player_id":"109","intent":"raise","chips":{"100":2,"1000":1},"accepted_at":null}}]],
-[[{"id":46,"time_sent":"2026-09-25T10:05:40.785052835Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":4,"1000":4,"50":4,"500":0},"current_bet":{"100":1,"500":1},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":1,"1000":3,"50":5,"500":1},"current_bet":{"100":4,"1000":1,"50":1},"pot_contribution":0,"state":"inactive"}],"pot":{"100":5,"1000":1,"50":1,"500":1},"street":[],"current_round":{"bet":1450,"current_player_position":0,"current_aggressor":1,"current_round_type":"pre_flop"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":47,"time_sent":"2026-09-25T10:05:40.8640353Z","event_type":"chip_exchange","data":{"user_id":"104","give":{"10":0,"100":0,"1000":1,"50":0,"500":0},"receive":{"10":0,"100":0,"1000":0,"50":0,"500":2}}}]],
--- /Ignore this line. Duplicate chip exchange -- [[{"id":48,"time_sent":"2026-09-25T10:05:40.93694893Z","event_type":"chip_exchange","data":{"user_id":"104","give":{"10":0,"100":0,"1000":1,"50":0,"500":0},"receive":{"10":0,"100":0,"1000":0,"50":0,"500":2}}}]],
-[[{"id":49,"time_sent":"2026-09-25T10:05:41.009084351Z","event_type":"player_action","data":{"player_id":"104","intent":"raise","chips":{"100":4,"1000":2,"500":1},"accepted_at":null}}]],
-[[{"id":50,"time_sent":"2026-09-25T10:05:41.079489799Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":0,"1000":1,"50":4,"500":1},"current_bet":{"100":5,"1000":2,"500":2},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":1,"1000":3,"50":5,"500":1},"current_bet":{"100":4,"1000":1,"50":1},"pot_contribution":0,"state":"active"}],"pot":{"100":9,"1000":3,"50":1,"500":2},"street":[],"current_round":{"bet":3500,"current_player_position":1,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":51,"time_sent":"2026-09-25T10:05:41.153148471Z","event_type":"player_action","data":{"player_id":"109","intent":"call","chips":{"1000":2,"50":1},"accepted_at":null}}]],
-[[{"id":52,"time_sent":"2026-09-25T10:05:41.222162893Z","event_type":"round_started","data":{"round_type":"flop"}}]],
-[[{"id":53,"time_sent":"2026-09-25T10:05:41.296036646Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":0,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":1,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"inactive"}],"pot":{"100":9,"1000":5,"50":2,"500":2},"street":[{"rank":75,"suit":99},{"rank":57,"suit":104},{"rank":52,"suit":99}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":0,"current_round_type":"flop"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":54,"time_sent":"2026-09-25T10:05:41.38106555Z","event_type":"player_action","data":{"player_id":"104","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":55,"time_sent":"2026-09-25T10:05:41.45365001Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":0,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":1,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"active"}],"pot":{"100":9,"1000":5,"50":2,"500":2},"street":[{"rank":75,"suit":99},{"rank":57,"suit":104},{"rank":52,"suit":99}],"current_round":{"bet":0,"current_player_position":1,"current_aggressor":0,"current_round_type":"flop"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":56,"time_sent":"2026-09-25T10:05:41.527258583Z","event_type":"player_action","data":{"player_id":"109","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":57,"time_sent":"2026-09-25T10:05:41.596093021Z","event_type":"round_started","data":{"round_type":"turn"}}]],
-[[{"id":58,"time_sent":"2026-09-25T10:05:41.667446699Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":0,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":1,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"inactive"}],"pot":{"100":9,"1000":5,"50":2,"500":2},"street":[{"rank":75,"suit":99},{"rank":57,"suit":104},{"rank":52,"suit":99},{"rank":75,"suit":115}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":0,"current_round_type":"turn"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":59,"time_sent":"2026-09-25T10:05:41.74297273Z","event_type":"player_action","data":{"player_id":"104","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":60,"time_sent":"2026-09-25T10:05:41.821892596Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":0,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":1,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"active"}],"pot":{"100":9,"1000":5,"50":2,"500":2},"street":[{"rank":75,"suit":99},{"rank":57,"suit":104},{"rank":52,"suit":99},{"rank":75,"suit":115}],"current_round":{"bet":0,"current_player_position":1,"current_aggressor":0,"current_round_type":"turn"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":61,"time_sent":"2026-09-25T10:05:41.896465047Z","event_type":"player_action","data":{"player_id":"109","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":62,"time_sent":"2026-09-25T10:05:41.966244818Z","event_type":"round_started","data":{"round_type":"river"}}]],
-[[{"id":63,"time_sent":"2026-09-25T10:05:42.036273872Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":0,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":1,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"inactive"}],"pot":{"100":9,"1000":5,"50":2,"500":2},"street":[{"rank":75,"suit":99},{"rank":57,"suit":104},{"rank":52,"suit":99},{"rank":75,"suit":115},{"rank":56,"suit":99}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":0,"current_round_type":"river"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":64,"time_sent":"2026-09-25T10:05:42.109630741Z","event_type":"player_action","data":{"player_id":"104","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":65,"time_sent":"2026-09-25T10:05:42.182523842Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":0,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":1,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"active"}],"pot":{"100":9,"1000":5,"50":2,"500":2},"street":[{"rank":75,"suit":99},{"rank":57,"suit":104},{"rank":52,"suit":99},{"rank":75,"suit":115},{"rank":56,"suit":99}],"current_round":{"bet":0,"current_player_position":1,"current_aggressor":0,"current_round_type":"river"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":66,"time_sent":"2026-09-25T10:05:42.261842009Z","event_type":"player_action","data":{"player_id":"109","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":67,"time_sent":"2026-09-25T10:05:42.331003868Z","event_type":"hand_payouts","data":[{"player_id":"104","chips":{"100":9,"1000":5,"50":2,"500":2}}]}]],
-[[{"id":68,"time_sent":"2026-09-25T10:05:42.40036105Z","event_type":"round_started","data":{"round_type":"completed"}}]],
-[[{"id":69,"time_sent":"2026-09-25T10:05:42.471420549Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":81,"suit":100},{"rank":56,"suit":100}],"stack":{"10":10,"100":9,"1000":6,"50":6,"500":3},"current_bet":{},"pot_contribution":3500,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":53,"suit":115},{"rank":74,"suit":115}],"stack":{"10":10,"100":1,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":3500,"state":"inactive"}],"pot":{},"street":[{"rank":75,"suit":99},{"rank":57,"suit":104},{"rank":52,"suit":99},{"rank":75,"suit":115},{"rank":56,"suit":99}],"current_round":{"bet":0,"current_player_position":1,"current_aggressor":0,"current_round_type":"completed"},"current_hand":{"id":3,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":70,"time_sent":"2026-09-25T10:05:42.544457998Z","event_type":"hand_started","data":{"id":4,"big_blind_cost":100,"big_blind_position":1,"small_blind_cost":50,"small_blind_position":0,"button_position":0}}]],
-[[{"id":71,"time_sent":"2026-09-25T10:05:42.61444584Z","event_type":"round_started","data":{"round_type":"setup"}}]],
-[[{"id":72,"time_sent":"2026-09-25T10:05:42.684113732Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":9,"1000":6,"50":6,"500":3},"current_bet":{},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":1,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":0,"state":"inactive"}],"pot":{},"street":[],"current_round":{"bet":50,"current_player_position":0,"current_aggressor":0,"current_round_type":"setup"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":73,"time_sent":"2026-09-25T10:05:42.753619615Z","event_type":"player_action","data":{"player_id":"104","intent":"ante","chips":{"50":1},"accepted_at":null}}]],
-[[{"id":74,"time_sent":"2026-09-25T10:05:42.822724201Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":9,"1000":6,"50":5,"500":3},"current_bet":{"50":1},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":1,"1000":1,"50":4,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"}],"pot":{"50":1},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":0,"current_round_type":"setup"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":75,"time_sent":"2026-09-25T10:05:42.892147207Z","event_type":"player_action","data":{"player_id":"109","intent":"ante","chips":{"100":1},"accepted_at":null}}]],
-[[{"id":76,"time_sent":"2026-09-25T10:05:42.961795292Z","event_type":"round_started","data":{"round_type":"pre_flop"}}]],
-[[{"id":77,"time_sent":"2026-09-25T10:05:43.030439358Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":84,"suit":115},{"rank":50,"suit":115}],"stack":{"10":10,"100":9,"1000":6,"50":5,"500":3},"current_bet":{"50":1},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":56,"suit":115},{"rank":81,"suit":99}],"stack":{"10":10,"100":0,"1000":1,"50":4,"500":1},"current_bet":{"100":1},"pot_contribution":0,"state":"inactive"}],"pot":{"100":1,"50":1},"street":[],"current_round":{"bet":100,"current_player_position":0,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":78,"time_sent":"2026-09-25T10:05:43.100815417Z","event_type":"player_action","data":{"player_id":"104","intent":"call","chips":{"50":1},"accepted_at":null}}]],
-[[{"id":79,"time_sent":"2026-09-25T10:05:43.169854017Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":84,"suit":115},{"rank":50,"suit":115}],"stack":{"10":10,"100":9,"1000":6,"50":4,"500":3},"current_bet":{"50":2},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":56,"suit":115},{"rank":81,"suit":99}],"stack":{"10":10,"100":0,"1000":1,"50":4,"500":1},"current_bet":{"100":1},"pot_contribution":0,"state":"active"}],"pot":{"100":1,"50":2},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":80,"time_sent":"2026-09-25T10:05:43.242860892Z","event_type":"chip_exchange","data":{"user_id":"109","give":{"10":10,"100":0,"1000":0,"50":2,"500":0},"receive":{"10":0,"100":2,"1000":0,"50":0,"500":0}}}]],
--- /Ignore this line. Duplicate chip exchange -- [[{"id":81,"time_sent":"2026-09-25T10:05:43.314933379Z","event_type":"chip_exchange","data":{"user_id":"109","give":{"10":10,"100":0,"1000":0,"50":2,"500":0},"receive":{"10":0,"100":2,"1000":0,"50":0,"500":0}}}]],
-[[{"id":82,"time_sent":"2026-09-25T10:05:43.385596881Z","event_type":"player_action","data":{"player_id":"109","intent":"raise","chips":{"100":2},"accepted_at":null}}]],
-[[{"id":83,"time_sent":"2026-09-25T10:05:43.457869345Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":84,"suit":115},{"rank":50,"suit":115}],"stack":{"10":10,"100":9,"1000":6,"50":4,"500":3},"current_bet":{"50":2},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":56,"suit":115},{"rank":81,"suit":99}],"stack":{"10":0,"100":0,"1000":1,"50":2,"500":1},"current_bet":{"100":3},"pot_contribution":0,"state":"inactive"}],"pot":{"100":3,"50":2},"street":[],"current_round":{"bet":300,"current_player_position":0,"current_aggressor":1,"current_round_type":"pre_flop"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":84,"time_sent":"2026-09-25T10:05:43.528455807Z","event_type":"player_action","data":{"player_id":"104","intent":"call","chips":{"100":2},"accepted_at":null}}]],
-[[{"id":85,"time_sent":"2026-09-25T10:05:43.604593851Z","event_type":"round_started","data":{"round_type":"flop"}}]],
-[[{"id":86,"time_sent":"2026-09-25T10:05:43.674949053Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":84,"suit":115},{"rank":50,"suit":115}],"stack":{"10":10,"100":7,"1000":6,"50":4,"500":3},"current_bet":{},"pot_contribution":300,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":56,"suit":115},{"rank":81,"suit":99}],"stack":{"10":0,"100":0,"1000":1,"50":2,"500":1},"current_bet":{},"pot_contribution":300,"state":"active"}],"pot":{"100":5,"50":2},"street":[{"rank":50,"suit":100},{"rank":52,"suit":104},{"rank":54,"suit":99}],"current_round":{"bet":0,"current_player_position":1,"current_aggressor":1,"current_round_type":"flop"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":87,"time_sent":"2026-09-25T10:05:43.761211374Z","event_type":"player_action","data":{"player_id":"109","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":88,"time_sent":"2026-09-25T10:05:43.834127995Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":84,"suit":115},{"rank":50,"suit":115}],"stack":{"10":10,"100":7,"1000":6,"50":4,"500":3},"current_bet":{},"pot_contribution":300,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":56,"suit":115},{"rank":81,"suit":99}],"stack":{"10":0,"100":0,"1000":1,"50":2,"500":1},"current_bet":{},"pot_contribution":300,"state":"inactive"}],"pot":{"100":5,"50":2},"street":[{"rank":50,"suit":100},{"rank":52,"suit":104},{"rank":54,"suit":99}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":1,"current_round_type":"flop"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":89,"time_sent":"2026-09-25T10:05:43.905475175Z","event_type":"player_action","data":{"player_id":"104","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":90,"time_sent":"2026-09-25T10:05:43.974407297Z","event_type":"round_started","data":{"round_type":"turn"}}]],
-[[{"id":91,"time_sent":"2026-09-25T10:05:44.043817222Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":84,"suit":115},{"rank":50,"suit":115}],"stack":{"10":10,"100":7,"1000":6,"50":4,"500":3},"current_bet":{},"pot_contribution":300,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":56,"suit":115},{"rank":81,"suit":99}],"stack":{"10":0,"100":0,"1000":1,"50":2,"500":1},"current_bet":{},"pot_contribution":300,"state":"active"}],"pot":{"100":5,"50":2},"street":[{"rank":50,"suit":100},{"rank":52,"suit":104},{"rank":54,"suit":99},{"rank":51,"suit":99}],"current_round":{"bet":0,"current_player_position":1,"current_aggressor":1,"current_round_type":"turn"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":92,"time_sent":"2026-09-25T10:05:44.113579765Z","event_type":"player_action","data":{"player_id":"109","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":93,"time_sent":"2026-09-25T10:05:44.198886176Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":84,"suit":115},{"rank":50,"suit":115}],"stack":{"10":10,"100":7,"1000":6,"50":4,"500":3},"current_bet":{},"pot_contribution":300,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":56,"suit":115},{"rank":81,"suit":99}],"stack":{"10":0,"100":0,"1000":1,"50":2,"500":1},"current_bet":{},"pot_contribution":300,"state":"inactive"}],"pot":{"100":5,"50":2},"street":[{"rank":50,"suit":100},{"rank":52,"suit":104},{"rank":54,"suit":99},{"rank":51,"suit":99}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":1,"current_round_type":"turn"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":94,"time_sent":"2026-09-25T10:05:44.269049887Z","event_type":"player_action","data":{"player_id":"104","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":95,"time_sent":"2026-09-25T10:05:44.338112101Z","event_type":"round_started","data":{"round_type":"river"}}]],
-[[{"id":96,"time_sent":"2026-09-25T10:05:44.431568065Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":84,"suit":115},{"rank":50,"suit":115}],"stack":{"10":10,"100":7,"1000":6,"50":4,"500":3},"current_bet":{},"pot_contribution":300,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":56,"suit":115},{"rank":81,"suit":99}],"stack":{"10":0,"100":0,"1000":1,"50":2,"500":1},"current_bet":{},"pot_contribution":300,"state":"active"}],"pot":{"100":5,"50":2},"street":[{"rank":50,"suit":100},{"rank":52,"suit":104},{"rank":54,"suit":99},{"rank":51,"suit":99},{"rank":51,"suit":104}],"current_round":{"bet":0,"current_player_position":1,"current_aggressor":1,"current_round_type":"river"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":97,"time_sent":"2026-09-25T10:05:44.503031459Z","event_type":"player_action","data":{"player_id":"109","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":98,"time_sent":"2026-09-25T10:05:44.572728139Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":84,"suit":115},{"rank":50,"suit":115}],"stack":{"10":10,"100":7,"1000":6,"50":4,"500":3},"current_bet":{},"pot_contribution":300,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":56,"suit":115},{"rank":81,"suit":99}],"stack":{"10":0,"100":0,"1000":1,"50":2,"500":1},"current_bet":{},"pot_contribution":300,"state":"inactive"}],"pot":{"100":5,"50":2},"street":[{"rank":50,"suit":100},{"rank":52,"suit":104},{"rank":54,"suit":99},{"rank":51,"suit":99},{"rank":51,"suit":104}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":1,"current_round_type":"river"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":99,"time_sent":"2026-09-25T10:05:44.644594356Z","event_type":"player_action","data":{"player_id":"104","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":100,"time_sent":"2026-09-25T10:05:44.722506628Z","event_type":"hand_payouts","data":[{"player_id":"104","chips":{"100":5,"50":2}}]}]],
-[[{"id":101,"time_sent":"2026-09-25T10:05:44.792800116Z","event_type":"round_started","data":{"round_type":"completed"}}]],
-[[{"id":102,"time_sent":"2026-09-25T10:05:44.862029097Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":84,"suit":115},{"rank":50,"suit":115}],"stack":{"10":10,"100":12,"1000":6,"50":6,"500":3},"current_bet":{},"pot_contribution":300,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":56,"suit":115},{"rank":81,"suit":99}],"stack":{"10":0,"100":0,"1000":1,"50":2,"500":1},"current_bet":{},"pot_contribution":300,"state":"inactive"}],"pot":{},"street":[{"rank":50,"suit":100},{"rank":52,"suit":104},{"rank":54,"suit":99},{"rank":51,"suit":99},{"rank":51,"suit":104}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":1,"current_round_type":"completed"},"current_hand":{"id":4,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":103,"time_sent":"2026-09-25T10:05:44.935820585Z","event_type":"hand_started","data":{"id":5,"big_blind_cost":100,"big_blind_position":0,"small_blind_cost":50,"small_blind_position":1,"button_position":1}}]],
-[[{"id":104,"time_sent":"2026-09-25T10:05:45.008968102Z","event_type":"round_started","data":{"round_type":"setup"}}]],
-[[{"id":105,"time_sent":"2026-09-25T10:05:45.07982699Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":12,"1000":6,"50":6,"500":3},"current_bet":{},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":0,"100":0,"1000":1,"50":2,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"}],"pot":{},"street":[],"current_round":{"bet":50,"current_player_position":1,"current_aggressor":1,"current_round_type":"setup"},"current_hand":{"id":5,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":106,"time_sent":"2026-09-25T10:05:45.153914709Z","event_type":"player_action","data":{"player_id":"109","intent":"ante","chips":{"50":1},"accepted_at":null}}]],
-[[{"id":107,"time_sent":"2026-09-25T10:05:45.227619957Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":12,"1000":6,"50":6,"500":3},"current_bet":{},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":0,"100":0,"1000":1,"50":1,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"inactive"}],"pot":{"50":1},"street":[],"current_round":{"bet":100,"current_player_position":0,"current_aggressor":1,"current_round_type":"setup"},"current_hand":{"id":5,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":108,"time_sent":"2026-09-25T10:05:45.302068551Z","event_type":"player_action","data":{"player_id":"104","intent":"ante","chips":{"100":1},"accepted_at":null}}]],
-[[{"id":109,"time_sent":"2026-09-25T10:05:45.37445635Z","event_type":"round_started","data":{"round_type":"pre_flop"}}]],
-[[{"id":110,"time_sent":"2026-09-25T10:05:45.453447821Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":57,"suit":115},{"rank":51,"suit":115}],"stack":{"10":10,"100":11,"1000":6,"50":6,"500":3},"current_bet":{"100":1},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":54,"suit":100},{"rank":52,"suit":99}],"stack":{"10":0,"100":0,"1000":1,"50":1,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"active"}],"pot":{"100":1,"50":1},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":1,"current_round_type":"pre_flop"},"current_hand":{"id":5,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":111,"time_sent":"2026-09-25T10:05:45.529119529Z","event_type":"player_action","data":{"player_id":"109","intent":"fold","chips":{},"accepted_at":null}}]],
-[[{"id":112,"time_sent":"2026-09-25T10:05:45.600493526Z","event_type":"hand_payouts","data":[{"player_id":"104","chips":{"100":1,"50":1}}]}]],
-[[{"id":113,"time_sent":"2026-09-25T10:05:45.671481172Z","event_type":"round_started","data":{"round_type":"completed"}}]],
-[[{"id":114,"time_sent":"2026-09-25T10:05:45.742381043Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":57,"suit":115},{"rank":51,"suit":115}],"stack":{"10":10,"100":12,"1000":6,"50":7,"500":3},"current_bet":{},"pot_contribution":100,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":54,"suit":100},{"rank":52,"suit":99}],"stack":{"10":0,"100":0,"1000":1,"50":1,"500":1},"current_bet":{},"pot_contribution":50,"state":"folded"}],"pot":{},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":1,"current_round_type":"completed"},"current_hand":{"id":5,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":115,"time_sent":"2026-09-25T10:05:45.817337148Z","event_type":"hand_started","data":{"id":6,"big_blind_cost":100,"big_blind_position":1,"small_blind_cost":50,"small_blind_position":0,"button_position":0}}]],
-[[{"id":116,"time_sent":"2026-09-25T10:05:45.888454265Z","event_type":"round_started","data":{"round_type":"setup"}}]],
-[[{"id":117,"time_sent":"2026-09-25T10:05:45.958844784Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":12,"1000":6,"50":7,"500":3},"current_bet":{},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":0,"100":0,"1000":1,"50":1,"500":1},"current_bet":{},"pot_contribution":0,"state":"inactive"}],"pot":{},"street":[],"current_round":{"bet":50,"current_player_position":0,"current_aggressor":0,"current_round_type":"setup"},"current_hand":{"id":6,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":118,"time_sent":"2026-09-25T10:05:46.029872299Z","event_type":"player_action","data":{"player_id":"104","intent":"ante","chips":{"50":1},"accepted_at":null}}]],
-[[{"id":119,"time_sent":"2026-09-25T10:05:46.098729602Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":12,"1000":6,"50":6,"500":3},"current_bet":{"50":1},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":0,"100":0,"1000":1,"50":1,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"}],"pot":{"50":1},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":0,"current_round_type":"setup"},"current_hand":{"id":6,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":120,"time_sent":"2026-09-25T10:05:46.181807056Z","event_type":"chip_exchange","data":{"user_id":"109","give":{"10":0,"100":0,"1000":0,"50":0,"500":1},"receive":{"10":0,"100":5,"1000":0,"50":0,"500":0}}}]],
--- /Ignore this line. Duplicate chip exchange -- [[{"id":121,"time_sent":"2026-09-25T10:05:46.25951033Z","event_type":"chip_exchange","data":{"user_id":"109","give":{"10":0,"100":0,"1000":0,"50":0,"500":1},"receive":{"10":0,"100":5,"1000":0,"50":0,"500":0}}}]],
-[[{"id":122,"time_sent":"2026-09-25T10:05:46.328134738Z","event_type":"player_action","data":{"player_id":"109","intent":"ante","chips":{"100":1},"accepted_at":null}}]],
-[[{"id":123,"time_sent":"2026-09-25T10:05:46.397435889Z","event_type":"round_started","data":{"round_type":"pre_flop"}}]],
-[[{"id":124,"time_sent":"2026-09-25T10:05:46.470573634Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":55,"suit":100},{"rank":50,"suit":100}],"stack":{"10":10,"100":12,"1000":6,"50":6,"500":3},"current_bet":{"50":1},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":74,"suit":104},{"rank":74,"suit":99}],"stack":{"10":0,"100":4,"1000":1,"50":1,"500":0},"current_bet":{"100":1},"pot_contribution":0,"state":"inactive"}],"pot":{"100":1,"50":1},"street":[],"current_round":{"bet":100,"current_player_position":0,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":6,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":125,"time_sent":"2026-09-25T10:05:46.54498017Z","event_type":"player_action","data":{"player_id":"104","intent":"call","chips":{"50":1},"accepted_at":null}}]],
-[[{"id":126,"time_sent":"2026-09-25T10:05:46.617595548Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":55,"suit":100},{"rank":50,"suit":100}],"stack":{"10":10,"100":12,"1000":6,"50":5,"500":3},"current_bet":{"50":2},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":74,"suit":104},{"rank":74,"suit":99}],"stack":{"10":0,"100":4,"1000":1,"50":1,"500":0},"current_bet":{"100":1},"pot_contribution":0,"state":"active"}],"pot":{"100":1,"50":2},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":6,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":127,"time_sent":"2026-09-25T10:05:46.688182648Z","event_type":"player_action","data":{"player_id":"109","intent":"raise","chips":{"100":4},"accepted_at":null}}]],
-[[{"id":128,"time_sent":"2026-09-25T10:05:46.757562431Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":55,"suit":100},{"rank":50,"suit":100}],"stack":{"10":10,"100":12,"1000":6,"50":5,"500":3},"current_bet":{"50":2},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":74,"suit":104},{"rank":74,"suit":99}],"stack":{"10":0,"100":0,"1000":1,"50":1,"500":0},"current_bet":{"100":5},"pot_contribution":0,"state":"inactive"}],"pot":{"100":5,"50":2},"street":[],"current_round":{"bet":500,"current_player_position":0,"current_aggressor":1,"current_round_type":"pre_flop"},"current_hand":{"id":6,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":129,"time_sent":"2026-09-25T10:05:46.830562475Z","event_type":"player_action","data":{"player_id":"104","intent":"fold","chips":{},"accepted_at":null}}]],
-[[{"id":130,"time_sent":"2026-09-25T10:05:46.901138717Z","event_type":"hand_payouts","data":[{"player_id":"109","chips":{"100":5,"50":2}}]}]],
-[[{"id":131,"time_sent":"2026-09-25T10:05:46.974251989Z","event_type":"round_started","data":{"round_type":"completed"}}]],
-[[{"id":132,"time_sent":"2026-09-25T10:05:47.050808378Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":55,"suit":100},{"rank":50,"suit":100}],"stack":{"10":10,"100":12,"1000":6,"50":5,"500":3},"current_bet":{},"pot_contribution":100,"state":"folded"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":74,"suit":104},{"rank":74,"suit":99}],"stack":{"10":0,"100":5,"1000":1,"50":3,"500":0},"current_bet":{},"pot_contribution":500,"state":"inactive"}],"pot":{},"street":[],"current_round":{"bet":500,"current_player_position":0,"current_aggressor":1,"current_round_type":"completed"},"current_hand":{"id":6,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
-[[{"id":133,"time_sent":"2026-09-25T10:05:47.123257051Z","event_type":"hand_started","data":{"id":7,"big_blind_cost":100,"big_blind_position":0,"small_blind_cost":50,"small_blind_position":1,"button_position":1}}]],
-[[{"id":134,"time_sent":"2026-09-25T10:05:47.196136943Z","event_type":"round_started","data":{"round_type":"setup"}}]],
-[[{"id":135,"time_sent":"2026-09-25T10:05:47.267530455Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":12,"1000":6,"50":5,"500":3},"current_bet":{},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":0,"100":5,"1000":1,"50":3,"500":0},"current_bet":{},"pot_contribution":0,"state":"active"}],"pot":{},"street":[],"current_round":{"bet":50,"current_player_position":1,"current_aggressor":1,"current_round_type":"setup"},"current_hand":{"id":7,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":136,"time_sent":"2026-09-25T10:05:47.344434188Z","event_type":"player_action","data":{"player_id":"109","intent":"ante","chips":{"50":1},"accepted_at":null}}]],
-[[{"id":137,"time_sent":"2026-09-25T10:05:47.414279266Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":12,"1000":6,"50":5,"500":3},"current_bet":{},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[],"stack":{"10":0,"100":5,"1000":1,"50":2,"500":0},"current_bet":{"50":1},"pot_contribution":0,"state":"inactive"}],"pot":{"50":1},"street":[],"current_round":{"bet":100,"current_player_position":0,"current_aggressor":1,"current_round_type":"setup"},"current_hand":{"id":7,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":138,"time_sent":"2026-09-25T10:05:47.487932343Z","event_type":"player_action","data":{"player_id":"104","intent":"ante","chips":{"100":1},"accepted_at":null}}]],
-[[{"id":139,"time_sent":"2026-09-25T10:05:47.557182326Z","event_type":"round_started","data":{"round_type":"pre_flop"}}]],
-[[{"id":140,"time_sent":"2026-09-25T10:05:47.626095187Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":75,"suit":100},{"rank":56,"suit":99}],"stack":{"10":10,"100":11,"1000":6,"50":5,"500":3},"current_bet":{"100":1},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":81,"suit":99},{"rank":53,"suit":100}],"stack":{"10":0,"100":5,"1000":1,"50":2,"500":0},"current_bet":{"50":1},"pot_contribution":0,"state":"active"}],"pot":{"100":1,"50":1},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":1,"current_round_type":"pre_flop"},"current_hand":{"id":7,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":141,"time_sent":"2026-09-25T10:05:47.700955125Z","event_type":"player_action","data":{"player_id":"109","intent":"raise","chips":{"100":2},"accepted_at":null}}]],
-[[{"id":142,"time_sent":"2026-09-25T10:05:47.770087261Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":75,"suit":100},{"rank":56,"suit":99}],"stack":{"10":10,"100":11,"1000":6,"50":5,"500":3},"current_bet":{"100":1},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":81,"suit":99},{"rank":53,"suit":100}],"stack":{"10":0,"100":3,"1000":1,"50":2,"500":0},"current_bet":{"100":2,"50":1},"pot_contribution":0,"state":"inactive"}],"pot":{"100":3,"50":1},"street":[],"current_round":{"bet":250,"current_player_position":0,"current_aggressor":1,"current_round_type":"pre_flop"},"current_hand":{"id":7,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":143,"time_sent":"2026-09-25T10:05:47.8441021Z","event_type":"player_action","data":{"player_id":"104","intent":"raise","chips":{"500":1},"accepted_at":null}}]],
-[[{"id":144,"time_sent":"2026-09-25T10:05:47.913487146Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":75,"suit":100},{"rank":56,"suit":99}],"stack":{"10":10,"100":11,"1000":6,"50":5,"500":2},"current_bet":{"100":1,"500":1},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":81,"suit":99},{"rank":53,"suit":100}],"stack":{"10":0,"100":3,"1000":1,"50":2,"500":0},"current_bet":{"100":2,"50":1},"pot_contribution":0,"state":"active"}],"pot":{"100":3,"50":1,"500":1},"street":[],"current_round":{"bet":600,"current_player_position":1,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":7,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":145,"time_sent":"2026-09-25T10:05:47.98319485Z","event_type":"player_action","data":{"player_id":"109","intent":"raise","chips":{"100":2,"1000":1},"accepted_at":null}}]],
-[[{"id":146,"time_sent":"2026-09-25T10:05:48.053306302Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":75,"suit":100},{"rank":56,"suit":99}],"stack":{"10":10,"100":11,"1000":6,"50":5,"500":2},"current_bet":{"100":1,"500":1},"pot_contribution":0,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":81,"suit":99},{"rank":53,"suit":100}],"stack":{"10":0,"100":1,"1000":0,"50":2,"500":0},"current_bet":{"100":4,"1000":1,"50":1},"pot_contribution":0,"state":"inactive"}],"pot":{"100":5,"1000":1,"50":1,"500":1},"street":[],"current_round":{"bet":1450,"current_player_position":0,"current_aggressor":1,"current_round_type":"pre_flop"},"current_hand":{"id":7,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":147,"time_sent":"2026-09-25T10:05:48.127064801Z","event_type":"player_action","data":{"player_id":"104","intent":"raise","chips":{"100":4,"1000":2,"500":1},"accepted_at":null}}]],
-[[{"id":148,"time_sent":"2026-09-25T10:05:48.201061665Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":75,"suit":100},{"rank":56,"suit":99}],"stack":{"10":10,"100":7,"1000":4,"50":5,"500":1},"current_bet":{"100":5,"1000":2,"500":2},"pot_contribution":0,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":81,"suit":99},{"rank":53,"suit":100}],"stack":{"10":0,"100":1,"1000":0,"50":2,"500":0},"current_bet":{"100":4,"1000":1,"50":1},"pot_contribution":0,"state":"active"}],"pot":{"100":9,"1000":3,"50":1,"500":2},"street":[],"current_round":{"bet":3500,"current_player_position":1,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":7,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":149,"time_sent":"2026-09-25T10:05:48.280050523Z","event_type":"player_action","data":{"player_id":"109","intent":"all_in","chips":{},"accepted_at":null}}]],
-[[{"id":150,"time_sent":"2026-09-25T10:05:48.357928615Z","event_type":"round_started","data":{"round_type":"flop"}}]],
-[[{"id":151,"time_sent":"2026-09-25T10:05:48.435406756Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":75,"suit":100},{"rank":56,"suit":99}],"stack":{"10":10,"100":7,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":3500,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":81,"suit":99},{"rank":53,"suit":100}],"stack":{"10":0,"100":0,"1000":0,"50":0,"500":0},"current_bet":{},"pot_contribution":1650,"state":"all_in"}],"pot":{"10":0,"100":10,"1000":3,"50":3,"500":2},"street":[{"rank":74,"suit":115},{"rank":51,"suit":115},{"rank":57,"suit":115}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":0,"current_round_type":"flop"},"current_hand":{"id":7,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":152,"time_sent":"2026-09-25T10:05:48.507175026Z","event_type":"player_action","data":{"player_id":"104","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":153,"time_sent":"2026-09-25T10:05:48.587577461Z","event_type":"round_started","data":{"round_type":"turn"}}]],
-[[{"id":154,"time_sent":"2026-09-25T10:05:48.662526488Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":75,"suit":100},{"rank":56,"suit":99}],"stack":{"10":10,"100":7,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":3500,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":81,"suit":99},{"rank":53,"suit":100}],"stack":{"10":0,"100":0,"1000":0,"50":0,"500":0},"current_bet":{},"pot_contribution":1650,"state":"all_in"}],"pot":{"10":0,"100":10,"1000":3,"50":3,"500":2},"street":[{"rank":74,"suit":115},{"rank":51,"suit":115},{"rank":57,"suit":115},{"rank":75,"suit":104}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":0,"current_round_type":"turn"},"current_hand":{"id":7,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":155,"time_sent":"2026-09-25T10:05:48.735879813Z","event_type":"player_action","data":{"player_id":"104","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":156,"time_sent":"2026-09-25T10:05:48.808951378Z","event_type":"round_started","data":{"round_type":"river"}}]],
-[[{"id":157,"time_sent":"2026-09-25T10:05:48.87972138Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":75,"suit":100},{"rank":56,"suit":99}],"stack":{"10":10,"100":7,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":3500,"state":"active"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":81,"suit":99},{"rank":53,"suit":100}],"stack":{"10":0,"100":0,"1000":0,"50":0,"500":0},"current_bet":{},"pot_contribution":1650,"state":"all_in"}],"pot":{"10":0,"100":10,"1000":3,"50":3,"500":2},"street":[{"rank":74,"suit":115},{"rank":51,"suit":115},{"rank":57,"suit":115},{"rank":75,"suit":104},{"rank":50,"suit":99}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":0,"current_round_type":"river"},"current_hand":{"id":7,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":158,"time_sent":"2026-09-25T10:05:48.952935178Z","event_type":"player_action","data":{"player_id":"104","intent":"check","chips":{},"accepted_at":null}}]],
-[[{"id":159,"time_sent":"2026-09-25T10:05:49.02203475Z","event_type":"hand_payouts","data":[{"player_id":"104","chips":{"100":10,"1000":3,"50":3,"500":2}}]}]],
-[[{"id":160,"time_sent":"2026-09-25T10:05:49.092892203Z","event_type":"round_started","data":{"round_type":"completed"}}]],
-[[{"id":161,"time_sent":"2026-09-25T10:05:49.161225188Z","event_type":"game_status_changed","data":{"id":"4217","started_at":"2026-09-25T10:05:37.565491153Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":true,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":75,"suit":100},{"rank":56,"suit":99}],"stack":{"10":10,"100":17,"1000":7,"50":8,"500":3},"current_bet":{},"pot_contribution":3500,"state":"inactive"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":81,"suit":99},{"rank":53,"suit":100}],"stack":{"10":0,"100":0,"1000":0,"50":0,"500":0},"current_bet":{},"pot_contribution":1650,"state":"out"}],"pot":{},"street":[{"rank":74,"suit":115},{"rank":51,"suit":115},{"rank":57,"suit":115},{"rank":75,"suit":104},{"rank":50,"suit":99}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":0,"current_round_type":"completed"},"current_hand":{"id":7,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
-[[{"id":162,"time_sent":"2026-09-25T10:05:49.230391045Z","event_type":"game_ending","data":[{"user_id":"104","display_name":"ear","user_type":"bot","position":0,"hole":[{"rank":75,"suit":100},{"rank":56,"suit":99}],"stack":{"10":10,"100":17,"1000":7,"50":8,"500":3},"current_bet":{},"pot_contribution":3500,"state":"won"},{"user_id":"109","display_name":"wolf","user_type":"bot","position":1,"hole":[{"rank":81,"suit":99},{"rank":53,"suit":100}],"stack":{"10":0,"100":0,"1000":0,"50":0,"500":0},"current_bet":{},"pot_contribution":1650,"state":"out"}]}]],
-
+  [[{"id":0,"time_sent":"2026-10-21T04:15:38.671342856Z","event_type":"welcome","data":{"id":"4713","started_at":null,"ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[],"pot":{},"street":[],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":0},"current_hand":{"id":0,"big_blind":0,"small_blind":0,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":0}}}]],
+  [[{"id":1,"time_sent":"2026-10-21T04:15:45.942571484Z","event_type":"game_starting","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":""},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":""}],"pot":{},"street":[],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":0,"current_round_type":"unset"},"current_hand":{"id":0,"big_blind":0,"small_blind":0,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":0}}}]],
+  [[{"id":2,"time_sent":"2026-10-21T04:15:46.035446363Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":""},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":""}],"pot":{},"street":[],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":0,"current_round_type":"unset"},"current_hand":{"id":0,"big_blind":0,"small_blind":0,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":0}}}]],
+  [[{"id":3,"time_sent":"2026-10-21T04:15:49.310897204Z","event_type":"hand_started","data":{"id":1,"big_blind_cost":100,"big_blind_position":0,"small_blind_cost":50,"small_blind_position":1,"button_position":1}}]],
+  [[{"id":4,"time_sent":"2026-10-21T04:15:49.402764082Z","event_type":"round_started","data":{"round_type":"setup"}}]],
+  [[{"id":5,"time_sent":"2026-10-21T04:15:49.480398423Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":"inactive"},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"}],"pot":{},"street":[],"current_round":{"bet":50,"current_player_position":1,"current_aggressor":1,"current_round_type":"setup"},"current_hand":{"id":1,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
+  [[{"id":6,"time_sent":"2026-10-21T04:15:49.563510805Z","event_type":"player_action","data":{"player_id":"107","intent":"ante","chips":{"50":1},"accepted_at":null}}]],
+  [[{"id":7,"time_sent":"2026-10-21T04:15:49.649892898Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"inactive"}],"pot":{"50":1},"street":[],"current_round":{"bet":100,"current_player_position":0,"current_aggressor":1,"current_round_type":"setup"},"current_hand":{"id":1,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
+  [[{"id":8,"time_sent":"2026-10-21T04:15:49.734438708Z","event_type":"player_action","data":{"player_id":"105","intent":"ante","chips":{"100":1},"accepted_at":null}}]],
+  [[{"id":9,"time_sent":"2026-10-21T04:15:49.825252085Z","event_type":"round_started","data":{"round_type":"pre_flop"}}]],
+  [[{"id":10,"time_sent":"2026-10-21T04:15:49.920250825Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[{"rank":55,"suit":115},{"rank":52,"suit":100}],"stack":{"10":10,"100":4,"1000":4,"50":5,"500":1},"current_bet":{"100":1},"pot_contribution":0,"state":"inactive"},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[{"rank":52,"suit":104},{"rank":50,"suit":104}],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"active"}],"pot":{"100":1,"50":1},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":1,"current_round_type":"pre_flop"},"current_hand":{"id":1,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
+  [[{"id":11,"time_sent":"2026-10-21T04:15:50.011146918Z","event_type":"player_action","data":{"player_id":"107","intent":"fold","chips":{},"accepted_at":null}}]],
+  [[{"id":12,"time_sent":"2026-10-21T04:15:50.089253608Z","event_type":"hand_payouts","data":[{"player_id":"105","chips":{"100":1,"50":1}}]}]],
+  [[{"id":13,"time_sent":"2026-10-21T04:15:50.172278989Z","event_type":"round_started","data":{"round_type":"completed"}}]],
+  [[{"id":14,"time_sent":"2026-10-21T04:15:50.250051739Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[{"rank":55,"suit":115},{"rank":52,"suit":100}],"stack":{"10":10,"100":5,"1000":4,"50":6,"500":1},"current_bet":{},"pot_contribution":100,"state":"inactive"},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[{"rank":52,"suit":104},{"rank":50,"suit":104}],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":50,"state":"folded"}],"pot":{},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":1,"current_round_type":"completed"},"current_hand":{"id":1,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":1,"small_blind_position":1,"big_blind_position":0}}}]],
+  [[{"id":15,"time_sent":"2026-10-21T04:16:20.263753229Z","event_type":"hand_started","data":{"id":2,"big_blind_cost":100,"big_blind_position":1,"small_blind_cost":50,"small_blind_position":0,"button_position":0}}]],
+  [[{"id":16,"time_sent":"2026-10-21T04:16:20.353500141Z","event_type":"round_started","data":{"round_type":"setup"}}]],
+  [[{"id":17,"time_sent":"2026-10-21T04:16:20.4365993Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":6,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":0,"state":"inactive"}],"pot":{},"street":[],"current_round":{"bet":50,"current_player_position":0,"current_aggressor":0,"current_round_type":"setup"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
+  [[{"id":18,"time_sent":"2026-10-21T04:16:20.519076388Z","event_type":"player_action","data":{"player_id":"105","intent":"ante","chips":{"50":1},"accepted_at":null}}]],
+  [[{"id":19,"time_sent":"2026-10-21T04:16:20.610906134Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"inactive"},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":0,"state":"active"}],"pot":{"50":1},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":0,"current_round_type":"setup"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
+  [[{"id":20,"time_sent":"2026-10-21T04:16:20.688585051Z","event_type":"player_action","data":{"player_id":"107","intent":"ante","chips":{"100":1},"accepted_at":null}}]],
+  [[{"id":21,"time_sent":"2026-10-21T04:16:20.774174073Z","event_type":"round_started","data":{"round_type":"pre_flop"}}]],
+  [[{"id":22,"time_sent":"2026-10-21T04:16:20.860502458Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[{"rank":81,"suit":99},{"rank":75,"suit":99}],"stack":{"10":10,"100":5,"1000":4,"50":5,"500":1},"current_bet":{"50":1},"pot_contribution":0,"state":"active"},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[{"rank":81,"suit":104},{"rank":74,"suit":104}],"stack":{"10":10,"100":4,"1000":4,"50":4,"500":1},"current_bet":{"100":1},"pot_contribution":0,"state":"inactive"}],"pot":{"100":1,"50":1},"street":[],"current_round":{"bet":100,"current_player_position":0,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
+  [[{"id":23,"time_sent":"2026-10-21T04:16:20.943088506Z","event_type":"player_action","data":{"player_id":"105","intent":"call","chips":{"50":1},"accepted_at":null}}]],
+  [[{"id":24,"time_sent":"2026-10-21T04:16:21.020490155Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[{"rank":81,"suit":99},{"rank":75,"suit":99}],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{"50":2},"pot_contribution":0,"state":"inactive"},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[{"rank":81,"suit":104},{"rank":74,"suit":104}],"stack":{"10":10,"100":4,"1000":4,"50":4,"500":1},"current_bet":{"100":1},"pot_contribution":0,"state":"active"}],"pot":{"100":1,"50":2},"street":[],"current_round":{"bet":100,"current_player_position":1,"current_aggressor":0,"current_round_type":"pre_flop"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
+  [[{"id":25,"time_sent":"2026-10-21T04:16:21.110992217Z","event_type":"player_action","data":{"player_id":"107","intent":"all_in","chips":{},"accepted_at":null}}]],
+  [[{"id":26,"time_sent":"2026-10-21T04:16:21.190140704Z","event_type":"round_started","data":{"round_type":"flop"}}]],
+  [[{"id":27,"time_sent":"2026-10-21T04:16:21.271636116Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[{"rank":81,"suit":99},{"rank":75,"suit":99}],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":100,"state":"inactive"},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[{"rank":81,"suit":104},{"rank":74,"suit":104}],"stack":{"10":0,"100":0,"1000":0,"50":0,"500":0},"current_bet":{},"pot_contribution":5300,"state":"active"}],"pot":{"10":10,"100":5,"1000":4,"50":6,"500":1},"street":[{"rank":53,"suit":99},{"rank":81,"suit":100},{"rank":84,"suit":104}],"current_round":{"bet":0,"current_player_position":1,"current_aggressor":1,"current_round_type":"flop"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
+  [[{"id":28,"time_sent":"2026-10-21T04:16:21.353602567Z","event_type":"player_action","data":{"player_id":"107","intent":"check","chips":{},"accepted_at":null}}]],
+  [[{"id":29,"time_sent":"2026-10-21T04:16:21.436824301Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[{"rank":81,"suit":99},{"rank":75,"suit":99}],"stack":{"10":10,"100":5,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":100,"state":"active"},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[{"rank":81,"suit":104},{"rank":74,"suit":104}],"stack":{"10":0,"100":0,"1000":0,"50":0,"500":0},"current_bet":{},"pot_contribution":5300,"state":"all_in"}],"pot":{"10":10,"100":5,"1000":4,"50":6,"500":1},"street":[{"rank":53,"suit":99},{"rank":81,"suit":100},{"rank":84,"suit":104}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":1,"current_round_type":"flop"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]],
+  [[{"id":30,"time_sent":"2026-10-21T04:16:21.518857174Z","event_type":"player_action","data":{"player_id":"105","intent":"check","chips":{},"accepted_at":null}}]],
+  [[{"id":31,"time_sent":"2026-10-21T04:16:21.602500278Z","event_type":"round_started","data":{"round_type":"turn"}}]],
+  [[{"id":32,"time_sent":"2026-10-21T04:16:21.684564988Z","event_type":"round_started","data":{"round_type":"river"}}]],
+  [[{"id":33,"time_sent":"2026-10-21T04:16:21.780762365Z","event_type":"hand_payouts","data":[{"player_id":"105","chips":{"100":2}},{"player_id":"107","chips":{"10":10,"100":3,"1000":4,"50":6,"500":1}}]}]],
+  [[{"id":34,"time_sent":"2026-10-21T04:16:21.858459273Z","event_type":"round_started","data":{"round_type":"completed"}}]],
+  [[{"id":35,"time_sent":"2026-10-21T04:16:21.936276576Z","event_type":"game_status_changed","data":{"id":"4713","started_at":"2026-10-21T04:15:45.942261894Z","ended_at":null,"game_config":{"player_count":2,"starting_chips":{"10":10,"100":5,"1000":4,"50":5,"500":1},"big_blind":100,"small_blind":50,"auto_starts_hands":false,"chip_denominations":[10,50,100,500,1000],"bot_turn_timeout":0},"table":{"players":[{"user_id":"105","display_name":"flow","user_type":"bot","position":0,"hole":[{"rank":81,"suit":99},{"rank":75,"suit":99}],"stack":{"10":10,"100":7,"1000":4,"50":4,"500":1},"current_bet":{},"pot_contribution":100,"state":"inactive"},{"user_id":"107","display_name":"red","user_type":"bot","position":1,"hole":[{"rank":81,"suit":104},{"rank":74,"suit":104}],"stack":{"10":10,"100":3,"1000":4,"50":6,"500":1},"current_bet":{},"pot_contribution":5300,"state":"all_in"}],"pot":{},"street":[{"rank":53,"suit":99},{"rank":81,"suit":100},{"rank":84,"suit":104},{"rank":54,"suit":115},{"rank":65,"suit":100}],"current_round":{"bet":0,"current_player_position":0,"current_aggressor":1,"current_round_type":"completed"},"current_hand":{"id":2,"big_blind":100,"small_blind":50,"started_at":"0001-01-01T00:00:00Z"},"button_position":0,"small_blind_position":0,"big_blind_position":1}}}]]
 }

@@ -30,6 +30,7 @@ function onLoad()
 
   -- Group services and zones into a globally accessible format
   Services = {
+    ExternalLogConnection  = getObjectFromGUID("89431a"),
     ServerClientConnection = getObjectFromGUID("1f6a51"),
 
     BlindManager     = getObjectFromGUID("07e1ee"),
