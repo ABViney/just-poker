@@ -526,14 +526,17 @@ function animatePlayerAction(params)
   if params.data.intent == "all_in" then
     -- going all in provides us an empty chips field.
     -- need to patch the data in order to move the actual chips
+    local player_stack = ChipManager.call("getChipsForPlayerById", player.user_id).stack
     local chips = {}
-    for denomination, chip_references in pairs(player.stack) do
-      chips[denomination] = 0
-      for chip_reference in chip_references do
-        chips[denomination] = chips[denomination] + math.abs(chip_reference.getQuantity())
+    log(player_stack)
+    for denomination, chip_stacks in pairs(player_stack) do
+      -- Populate field if not set
+      if not chips[denomination] then chips[denomination] = 0 end
+      for chip_stack in chip_stacks do
+        chips[denomination] = chips[denomination] + math.abs(chip_stack.getQuantity())
       end
     end
-    params.data.chips = chips
+    data.chips = chips
   end
 
   -- I'm sure I'll end up revisiting this again :^)
