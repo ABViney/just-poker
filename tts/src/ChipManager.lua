@@ -521,7 +521,7 @@ function moveChipsBetweenStacks(params)
     local destination    = _getDestinationForDenomination(denomination)
 
     if not chip_reference then
-      log("Could not find $"..denomination.." chips to move for "..giving_stack_type, "ChipManager.moveChipsBetweenStacks", "[ERROR]", false, true)
+      log("Could not find $"..denomination.." chips to move in "..giving_stack_type.." for "..owner.display_name.." ("..owner.user_id..")", "ChipManager.moveChipsBetweenStacks", "[ERROR]", false, true)
       return
     end
 
@@ -708,6 +708,24 @@ function getChipsByMemo(memo)
       table.insert(chips[denomination], object)
     end
   end
+  return chips
+end
+
+--[[
+  Gets the chips for a player
+]]
+function getChipsForPlayerById(user_id)
+  local player = PlayerManager.call("getPlayerById", user_id)
+  local stack_chip_memo    = generateChipData(player, "stack").memo
+  local bet_chip_memo      = generateChipData(player, "bet").memo
+  local exchange_chip_memo = generateChipData(player, "exchange").memo
+
+  local chips = {
+    stack    = getChipsByMemo(stack_chip_memo),
+    bet      = getChipsByMemo(bet_chip_memo),
+    exchange = getChipsByMemo(exchange_chip_memo)
+  }
+
   return chips
 end
 
