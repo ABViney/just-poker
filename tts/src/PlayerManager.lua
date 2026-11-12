@@ -346,7 +346,7 @@ end
 function getPlayerByPosition(position)
   for player in PLAYERS do
     if player.position == position then
-      return player     
+      return player
     end
   end
 end

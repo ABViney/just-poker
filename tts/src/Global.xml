@@ -1,6 +1,16 @@
 <!-- 
 
 Carriage return / newline = &#13;&#10;
+This one works too: &#xA;
+
+Plain whitespace &#32;
+
+Better reference page for XML: https://digital-legacy.co.za/XmlLayout/Documentation#CommonAttributes
+The API lacks some information for attributes.
+Ex. The "colors" attribute on ToggleButton is wrong-its supposed 
+to be (normal|highlighted|pressed|disabled) but `normal` doesn't change anything.
+"deselectedBackgroundColor" provides a way to set this, but it is undocumented in TTS.
+
 
 -->
 
@@ -19,11 +29,20 @@ Carriage return / newline = &#13;&#10;
   >
     <Button
       width="20" height="20"
+      rectAlignment="MiddleRight"
     />
     <Text
       color="white"
     />
   </Panel>
+
+  <ToggleGroup class="tab-button">
+    <ToggleButton
+      colors = "#AAAAAA|blue|yellow|#FFFFFFFF"
+      deselectedBackgroundColor="gray"
+    />
+
+  </ToggleGroup>
 
   <Panel class="div"
     color="#897D6B"
@@ -43,56 +62,463 @@ Carriage return / newline = &#13;&#10;
     3. Start a game
 -->
 <Panel
-    id="GameConfigMenu"
+    id="panel_game-config-menu"
     class="floating-panel"
-    width="400" height="300"
     rectAlignment="LowerCenter"
     
     showAnimation="SlideIn_Left"
     hideAnimation="SlideOut_Left"
-
+    
     visibility="Black"
+
+    width="425" height="350"
 >
   <Panel
-    id="GameConfigMenuBar"
     class="menu-bar"
   >
-    <Text>Configure game</Text>
+    <Text id="text_game-config-menu-title" text="Configure game" />
 
     <Button
-      id="minimize_game_config_menu"
-      class="menu-bar-button"
-      rectAlignment="MiddleRight"
+      id="button_minimize-game-config-menu"
       tooltip="Minimize this window.&#13;&#10;It can be opened again with the button&#13;&#10;that appears in the bottom right."
       tooltipPosition="Above"
     >-</Button>
   </Panel>
+  <ToggleGroup
+    class="tab-group"
+    height="25"
+    offsetXY="0 -20"
+    rectAlignment="UpperCenter"
+  >
+    <HorizontalLayout>
+      <ToggleButton
+        id="game-config_tab_create-new-game"
+        width="100"
+        text="Create new game"
+        isOn="True"
+        interactable="False"
+        onValueChanged="onGameConfigMenuTabChanged"
+      />
+      <ToggleButton
+        id="game-config_tab_listen-to-existing-game"
+        width="100"
+        text="Listen to existing game"
+        onValueChanged="onGameConfigMenuTabChanged"
+      />
+    </HorizontalLayout>
+  </ToggleGroup>
+
     <!-- Load from state section? Input GameID, load gamestate from server. -->
     <!-- Tabs for switching between new game and continue game menus -->
 
     <!-- ________________________________ -->
     <!--         New game menu            -->
     <!-- ________________________________ -->
-  
+    <VerticalScrollView
+      id="page_create-game-page"
+      childForceExpandHeight="False"
+      color="#00000000"
+      horizontal="False"
+      horizontalScrollbarVisibility="AutoHideAndExpandViewport"
+      offsetXY="0 0"
+      padding="10 10 0 10"
+      rectAlignment="LowerCenter"
+      scrollbarColors="#AD9F91|#C9B9A9|#756C63|rgba(0.78,0.78,0.78,0.5)"
+      scrollSensitivity="20"
+      width="425" height="305"
+    >
+      <!-- Tab 1: Create new game. Create a game and join players to it-->
+      <TableLayout
+        id="form_create-game"
+        autoCalculateHeight="True"
+        cellSpacing="1"
+      >
+      
+        <!-- START Game Config -->
 
+        <!-- Auth token -->
+        <Row preferredHeight="30">
+          <Cell>
+            <TableLayout
+              cellSpacing="3"
+              columnWidths="100 200 100"
+            >
+              <Row>
+                <Cell>
+                  <Text>Auth Token: </Text>
+                </Cell>
+                <Cell columnSpan="2">
+                  <InputField
+                    id="input_create-game-auth-token"
+                    placeholder="Enter auth token"
+                    onEndEdit="onGameConfigUpdated"
+                  />
+                </Cell>
+              </Row>
+            </TableLayout>
+          </Cell>
+        </Row>
+        
+        <Row preferredHeight="10" />
 
+        <!-- Player count Selection -->
+        <Row preferredHeight="40">
+          <Cell>
+            <TableLayout
+              cellSpacing="2"
+              columnWidths="200 200"
+            >
+              <Row>
+                <Cell>
+                  <Text>Number of&#xA;Humans: </Text>
+                  <Dropdown
+                    id="dropdown_number-of-humans"
+                    onValueChanged="onGameConfigUpdated"
+                    scrollSensitivity="20"
+                  >
+                    <Option selected="True">0</Option>
+                    <Option>1</Option>
+                    <Option>2</Option>
+                    <Option>3</Option>
+                    <Option>4</Option>
+                    <Option>5</Option>
+                    <Option>6</Option>
+                    <Option>7</Option>
+                    <Option>8</Option>
+                  </Dropdown>
+                </Cell>
+                <Cell>
+                  <Text>Number of&#xA;Bots: </Text>
+                  <Dropdown
+                    id="dropdown_number-of-bots"
+                    onValueChanged="onGameConfigUpdated"
+                    scrollSensitivity="20"
+                  >
+                    <Option selected="True">0</Option>
+                    <Option>1</Option>
+                    <Option>2</Option>
+                    <Option>3</Option>
+                    <Option>4</Option>
+                    <Option>5</Option>
+                    <Option>6</Option>
+                    <Option>7</Option>
+                    <Option>8</Option>
+                  </Dropdown>
+                </Cell>
+              </Row>
+            </TableLayout>
+          </Cell>
+        </Row>
+        <!-- Player auth tokens -->
+        <Row
+          id="game-config_player-auth-tokens-row"
+          preferredHeight="254"
+        >
+          <Cell>
+            <TableLayout
+              cellSpacing="2"
+              columnWidths="100 300"
+            >
+              <Row preferredHeight="30">
+                <Cell>
+                  <Text>Player #1</Text>
+                </Cell>
+                <Cell>
+                  <InputField
+                    id="input_player-auth-token_1"
+                    characterLimit="66"
+                    onEndEdit="onGameConfigUpdated"
+                    placeholder="Enter auth token"
+                  />
+                </Cell>
+              </Row>
+              <Row preferredHeight="30">
+                <Cell>
+                  <Text>Player #2</Text>
+                </Cell>
+                <Cell>
+                  <InputField
+                    id="input_player-auth-token_2"
+                    characterLimit="66"
+                    onEndEdit="onGameConfigUpdated"
+                    placeholder="Enter auth token"
+                  />
+                </Cell>
+              </Row>
+              <Row preferredHeight="30">
+                <Cell>
+                  <Text>Player #3</Text>
+                </Cell>
+                <Cell>
+                  <InputField
+                    id="input_player-auth-token_3"
+                    characterLimit="66"
+                    onEndEdit="onGameConfigUpdated"
+                    placeholder="Enter auth token"
+                  />
+                </Cell>
+              </Row>
+              <Row preferredHeight="30">
+                <Cell>
+                  <Text>Player #4</Text>
+                </Cell>
+                <Cell>
+                  <InputField
+                    id="input_player-auth-token_4"
+                    characterLimit="66"
+                    onEndEdit="onGameConfigUpdated"
+                    placeholder="Enter auth token"
+                  />
+                </Cell>
+              </Row>
+              <Row preferredHeight="30">
+                <Cell>
+                  <Text>Player #5</Text>
+                </Cell>
+                <Cell>
+                  <InputField
+                    id="input_player-auth-token_5"
+                    characterLimit="66"
+                    onEndEdit="onGameConfigUpdated"
+                    placeholder="Enter auth token"
+                  />
+                </Cell>
+              </Row>
+              <Row preferredHeight="30">
+                <Cell>
+                  <Text>Player #6</Text>
+                </Cell>
+                <Cell>
+                  <InputField
+                    id="input_player-auth-token_6"
+                    characterLimit="66"
+                    onEndEdit="onGameConfigUpdated"
+                    placeholder="Enter auth token"
+                  />
+                </Cell>
+              </Row>
+              <Row preferredHeight="30">
+                <Cell>
+                  <Text>Player #7</Text>
+                </Cell>
+                <Cell>
+                  <InputField
+                    id="input_player-auth-token_7"
+                    characterLimit="66"
+                    onEndEdit="onGameConfigUpdated"
+                    placeholder="Enter auth token"
+                  />
+                </Cell>
+              </Row>
+              <Row preferredHeight="30">
+                <Cell>
+                  <Text>Player #8</Text>
+                </Cell>
+                <Cell>
+                  <InputField
+                    id="input_player-auth-token_8"
+                    characterLimit="66"
+                    onEndEdit="onGameConfigUpdated"
+                    placeholder="Enter auth token"
+                  />
+                </Cell>
+              </Row>
+            </TableLayout>
+          </Cell>
+        </Row>
 
-    <!-- Starting Stack -->
+        <Row preferredHeight="10" />
 
+        <!-- Bot turn timeout -->
+        <Row preferredHeight="30">
+          <Cell>
+            <Text>Bot turn timeout (ms)</Text>
+            <InputField
+              id="input_bot-turn-timeout"
+              characterValidation="Integer"
+              characterLimit="7"
+              onEndEdit="onGameConfigUpdated"
+              width="80"
+            />
+          </Cell>
+        </Row>
 
-    <!-- Starting Blinds -->
+        <Row preferredHeight="10" />
 
+        <!-- Auto start hands -->
+        <Row preferredHeight="30">
+          <Cell>
+            <Text>Auto-start hands:</Text>
+            <Toggle
+              id="toggle_auto-start-hands" 
+              onValueChanged="onGameConfigUpdated"
+            />
+          </Cell>
+        </Row>
 
-    <!-- Register bots -->
+        <Row preferredHeight="10" />
 
+        <!-- Blinds costs -->
+        <Row preferredHeight="30">
+          <Cell>
+            <TableLayout
+              cellSpacing="2"
+              columnWidths="200 200">
+                <Row>
+                  <Cell>
+                    <Text>Small Blind: </Text>
+                    <InputField
+                      id="input_initial-cost_small-blind"
+                      characterLimit="5"
+                      characterValidation="Integer"
+                      onEndEdit="onGameConfigUpdated"
+                    />
+                  </Cell>
+                  <Cell>
+                    <Text>Big Blind: </Text>
+                    <InputField
+                      id="input_initial-cost_big-blind"
+                      characterLimit="5"
+                      characterValidation="Integer"
+                      onEndEdit="onGameConfigUpdated"
+                    />
+                  </Cell>
+                </Row>
+            </TableLayout>
+          </Cell>
+        </Row>
 
-    <!-- Connect to existing game -->
+        <Row preferredHeight="10" />
+
+        <!-- Chip denominations -->
+        <Row preferredHeight="60">
+          <Cell>
+            <TableLayout
+              columnWidths="80">
+                <Row>
+                  <Cell columnSpan="5">
+                    <Text>Chip denominations:</Text>
+                  </Cell>
+                </Row>
+                <Row>
+                  <Cell><Toggle id="toggle_using-chip-denomination_10" onValueChanged="onGameConfigUpdated" isOn="True">10</Toggle></Cell>
+                  <Cell><Toggle id="toggle_using-chip-denomination_50" onValueChanged="onGameConfigUpdated" isOn="True">50</Toggle></Cell>
+                  <Cell><Toggle id="toggle_using-chip-denomination_100" onValueChanged="onGameConfigUpdated" isOn="True">100</Toggle></Cell>
+                  <Cell><Toggle id="toggle_using-chip-denomination_500" onValueChanged="onGameConfigUpdated" isOn="True">500</Toggle></Cell>
+                  <Cell><Toggle id="toggle_using-chip-denomination_1000" onValueChanged="onGameConfigUpdated" isOn="True">1000</Toggle></Cell>
+                </Row>
+            </TableLayout>
+          </Cell>
+        </Row>
+
+        <Row preferredHeight="10" />
+
+        <!-- Starting chips -->
+        <Row preferredHeight="130">
+          <Cell>
+            <TableLayout
+              automaticallyRemoveEmptyColumns="False"
+              columnWidths="180 40 180"
+            >
+              <Row preferredHeight="40"><Cell columnSpan="3"><Text>Starting chips:</Text></Cell></Row>
+              <Row preferredHeight="30">
+                <Cell>
+                  <Text>1000</Text>
+                  <InputField
+                    id="input_starting-chips_1000"
+                    characterLimit="3"
+                    characterValidation="Integer"
+                    onEndEdit="onGameConfigUpdated"
+                  />
+                </Cell>
+                <Cell></Cell>
+                <Cell>
+                  <Text>50</Text>
+                  <InputField
+                    id="input_starting-chips_50"
+                    characterLimit="3"
+                    characterValidation="Integer"
+                    onEndEdit="onGameConfigUpdated"
+                  />
+                </Cell>
+              </Row>
+              <Row preferredHeight="30">
+                <Cell>
+                  <Text>500&#32;</Text>
+                  <InputField
+                    id="input_starting-chips_500"
+                    characterLimit="3"
+                    characterValidation="Integer"
+                    onEndEdit="onGameConfigUpdated"
+                  />
+                </Cell>
+                <Cell></Cell>
+                <Cell>
+                  <Text>10</Text>
+                  <InputField
+                    id="input_starting-chips_10"
+                    characterLimit="3"
+                    characterValidation="Integer"
+                    onEndEdit="onGameConfigUpdated"
+                  />
+                </Cell>
+              </Row>
+              <Row preferredHeight="30">
+                <Cell>
+                  <Text>100</Text>
+                  <InputField
+                    id="input_starting-chips_100"
+                    characterLimit="3"
+                    characterValidation="Integer"
+                    onEndEdit="onGameConfigUpdated"
+                  />
+                </Cell>
+                <Cell></Cell>
+                <Cell>
+                </Cell>
+              </Row>
+            </TableLayout>
+          </Cell>
+        </Row>
+
+        <Row preferredHeight="10" />
+
+        <Row preferredHeight="50">
+          <Cell>
+            <Button
+              id="button_create-game"
+              onClick="onCreateGameFromConfigButtonClicked"  
+            >
+            Create game
+            </Button>
+            <Button
+              id="button_start-game"
+              onClick="onStartGameFromConfigButtonClicked"
+              active="False"
+            >
+            Start game  
+            </Button>
+          </Cell>
+        </Row>
+
+        <!-- END Game Config -->
+      </TableLayout>
+
+    </VerticalScrollView>
+
+    <!-- ________________________________ -->
+    <!--   Listen to existing game menu   -->
+    <!-- ________________________________ -->
+    <!-- Tab 2: Listen to a game started elsewhere. -->
     <VerticalLayout
-      padding="10 10 30 10"
+      id="page_listen-to-existing-game-page"
+        offsetXY="0 -45"
+        rectAlignment="UpperCenter"
+        active="False"
     >
       <TableLayout
         autoCalculateHeight="True"
-        cellSpacing="3"
+        cellSpacing="2"
         columnWidths="100 200 100"
       >
         <Row preferredHeight="30">
@@ -125,9 +551,9 @@ Carriage return / newline = &#13;&#10;
           <Cell>
             <Text>Listen to game: </Text>
           </Cell>
-          <Cell childForceExpandWidth="true">
+          <Cell childForceExpandWidth="True">
             <InputField
-              id="listen_to_game_id_input"
+              id="input_game-id-to-listen-to"
               placeholder="Enter Game ID"
               characterValidation="Integer"
               characterLimit="10"
@@ -136,7 +562,7 @@ Carriage return / newline = &#13;&#10;
           </Cell>
           <Cell>
             <Button
-              id="listenToGameIdButton"
+              id="button_listen-to-game"
               onClick="onListenToGameIdButtonPressed"
             >
               Listen
@@ -145,7 +571,6 @@ Carriage return / newline = &#13;&#10;
         </Row>
       </TableLayout>
     </VerticalLayout>
-    <!-- Start game -->
 </Panel>
 
 <!--                            -->

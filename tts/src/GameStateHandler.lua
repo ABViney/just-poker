@@ -141,6 +141,14 @@ function onGameStateReceived(params)
       local player = PlayerManager.call("getPlayerById", player_data.user_id)
       player.state = player_data.state
     end
+
+    -- TODO: Check if params.data.table.current_round.current_player_position
+    -- points to a human player. if it does, publish an event that has the 
+    -- PlayerManager announce and record the player's move
+    local current_player = params.data.table.current_round.current_player_position
+    
+
+
     onFinish_params.service.call(onFinish_params.callback, onFinish_params.args)
     return
   end

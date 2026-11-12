@@ -63,11 +63,16 @@ HEADERS = {}
 DEFAULT_POKER_SERVICE_ENDPOINT = "https://game.bahms.org/api/poker/game/{game_id}/state/listen"
 POKER_SERVICE_ENDPOINT = nil
 
-DEFAULT_START_HAND_ENDPOINT = "https://game.bahms.org/api/poker/game/{game_id}/hand"
-START_HAND_ENDPOINT = nil
+GAME_ENDPOINT                  = "https://game.bahms.org/api/poker/game"
+DEFAULT_JOIN_GAME_ENDPOINT     = "https://game.bahms.org/api/poker/game/{game_id}/player"
+DEFAULT_START_GAME_ENDPOINT    = "https://game.bahms.org/api/poker/game/{game_id}/started"
+USER_ENDPOINT                  = "https://game.bahms.org/api/poker/user/me"
 
-DEFAULT_DECK_ORDER_ENDPOINT = "https://game.bahms.org/api/poker/game/{game_id}/deck"
-DECK_ORDER_ENDPOINT = nil
+DEFAULT_START_HAND_ENDPOINT    = "https://game.bahms.org/api/poker/game/{game_id}/hand"
+START_HAND_ENDPOINT    = nil
+
+DEFAULT_DECK_ORDER_ENDPOINT    = "https://game.bahms.org/api/poker/game/{game_id}/deck"
+DECK_ORDER_ENDPOINT   = nil
 
 end -- Connection configuration
 
@@ -306,6 +311,208 @@ function processEvents(index)
 end
 
 --[[
+  Check if an auth token is valid and if so return the user profile for it.
+
+  params = {
+    ...  
+    auth_token = string,
+
+    onFinish_params = {
+      service  = <Scripting Object>,
+      callback = string
+    }
+  }
+  
+  Invokes the callback and passes it a table containing the decoded response (or an error) and the parameters
+  passed to this function.
+]]
+function getUserByAuthToken(params)
+  local auth_token = params.auth_token
+  local onFinish_params = params.onFinish_params
+  WebRequest.custom(
+    USER_ENDPOINT,
+    "GET",
+    true,                               -- I AM handling the response body
+    "",                                 -- Body is an empty string
+    {["Authorization"] = "Bearer "..auth_token},
+    function(instance)
+      -- if instance.is_error then
+      --   local error = {
+      --     status = instance.response_code,
+      --     error  = instance.error
+      --   }
+      --   local log_message = logString(error, "ServerClientConnection.getUserByAuthToken", "[ERROR]", false, true)
+      --   log("\n"..log_message)
+      -- end
+
+      if instance.response_code == 200 then
+        -- Success.
+        local body = JSON.decode(instance.text)
+        local result = {
+          user = body.data,
+          copy_of_args = params,
+        }
+        onFinish_params.service.call(onFinish_params.callback, result)
+        return
+      end
+
+      local error = {response_code = instance.response_code, text = instance.text}
+      local log_message = logString(error, "ServerClientConnection.getUserByAuthToken\nUnhandled response type.", "[ERROR]", false, true)
+      log(log_message)
+
+      local result = {
+        error = error,
+        copy_of_args = params
+      }
+
+      onFinish_params.service.call(onFinish_params.callback, result)
+    end
+  )
+end
+
+--[[
+  Creates a game. Once the response is received, invokes the provided callback
+  with the result.
+
+  params = {
+    auth_token = string,
+    game_config_dto = <GameConfigDTO>,
+    onFinish_params = {
+      service  = string,
+      callback = string
+    }
+  }
+]]
+function createGame(params)
+  local auth_token      = params.auth_token
+  local game_config_dto = params.game_config_dto
+  local onFinish_params = params.onFinish_params
+  local payload         = JSON.encode(game_config_dto)
+  WebRequest.custom(
+    GAME_ENDPOINT,
+    "POST",
+    true,
+    payload,
+    {["Authorization"] = "Bearer "..auth_token},
+    function(instance)
+      if instance.response_code == 200 then
+        local json = JSON.decode(instance.text)
+        onFinish_params.service.call(onFinish_params.callback, json)
+        return
+      end
+
+      local result = {
+        response_code = instance.response_code,
+        error         = instance.text
+      }
+      onFinish_params.service.call(onFinish_params.callback, result)
+    end
+  )
+end
+
+
+
+--[[
+  Creates a game. Once the response is received, invokes the provided callback
+  with the result.
+
+  params = {
+    auth_token = string,
+    game_config_dto = <GameConfigDTO>,
+    onFinish_params = {
+      service  = string,
+      callback = string
+    }
+  }
+]]
+function startGame(params)
+  local auth_token      = params.auth_token
+  local onFinish_params = params.onFinish_params
+  local start_game_endpoint = string.gsub(DEFAULT_START_GAME_ENDPOINT, "{game_id}", params.game_id)
+  WebRequest.custom(
+    start_game_endpoint,
+    "POST",
+    true,
+    "",
+    {["Authorization"] = "Bearer "..auth_token},
+    function(instance)
+      local body = JSON.decode(instance.text)
+      if instance.response_code == 200 or body.data.error == "[2020]: game already started" then
+        onFinish_params.service.call(onFinish_params.callback, {game_started = true})
+        return
+      end
+
+      local result = {
+        game_started  = false,
+        errors = {
+          response_code = instance.response_code,
+          text          = instance.text
+        }
+      }
+      onFinish_params.service.call(onFinish_params.callback, result)
+    end
+  )
+end
+
+--[[
+  Posts a request to join a user to a game.
+  The response for this is inconsequential
+
+  params = {
+    ...  
+    auth_token = string,
+    game_id    = string,
+
+    onFinish_params = {
+      service  = <Scripting Object>,
+      callback = string
+    }
+  }
+  
+  Invokes the callback and passes it a table containing a boolean for if the player joined,
+  an error if the player was not joined,
+]]
+function joinPlayerToGame(params)
+  local auth_token = params.auth_token
+  local onFinish_params = params.onFinish_params
+  local join_game_endpoint = string.gsub(DEFAULT_JOIN_GAME_ENDPOINT, "{game_id}", params.game_id)
+
+  WebRequest.custom(
+    join_game_endpoint,
+    "POST",
+    true,                               -- I AM handling the response body
+    "",                                 -- Body is an empty string
+    {["Authorization"] = "Bearer "..auth_token},
+    function(instance)
+      local response_code = instance.response_code
+      local body = JSON.decode(instance.text)
+      if response_code == 200
+        or (response_code == 400 and body.data.error == "player already joined table") then
+        -- Success. Player is in the game.
+        local result = {
+          joined = true,
+          copy_of_args = params,
+        }
+        onFinish_params.service.call(onFinish_params.callback, result)
+        return
+      end
+
+      local error = {response_code = instance.response_code, text = instance.text}
+      local log_message = logString(error, "ServerClientConnection.joinPlayerToGame\nUnhandled response type.", "[ERROR]", false, true)
+      log(log_message)
+
+      local result = {
+        joined       = false,
+        error        = error,
+        copy_of_args = params
+      }
+
+      onFinish_params.service.call(onFinish_params.callback, result)
+    end
+  )
+end
+
+--[[
   Informs the server to start the next hand.
 
   onFinish_params = {
@@ -345,7 +552,6 @@ function startNextHand(onFinish_params)
         }
         local log_message = logString(error, "ServerClientConnection.startNexthand", "[ERROR]", false, true)
         log("\n"..log_message)
-
       end
 
       if instance.response_code == 400 then
