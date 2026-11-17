@@ -27,6 +27,8 @@ function addUser(params)
     user_type    = userDTO.user_type,
     auth_token   = params.auth_token
   }
+  local log_message = logString("Added "..userDTO.display_name.." ["..userDTO.user_id.."] to repository.", "UserRepository.addUser", "[INFO]", false, true)
+  log(log_message)
 end
 
 function getUserById(user_id)
