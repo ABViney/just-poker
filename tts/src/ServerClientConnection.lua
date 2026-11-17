@@ -102,7 +102,7 @@ local EVENT_QUEUE = {}
     auth_token      = string
   }
 ]]
-function setup(params)
+function _setup(params)
   POKER_SERVICE_ENDPOINT = string.gsub(DEFAULT_POKER_SERVICE_ENDPOINT, "{game_id}", params.game_id)
   DECK_ORDER_ENDPOINT    = string.gsub(DEFAULT_DECK_ORDER_ENDPOINT, "{game_id}", params.game_id)
   START_HAND_ENDPOINT    = string.gsub(DEFAULT_START_HAND_ENDPOINT, "{game_id}", params.game_id)
@@ -142,7 +142,7 @@ end
 ]]
 function createEventListener(params)
   log("Setting up server-client connection")
-  setup(params)
+  _setup(params)
 
   log(params)
 
@@ -179,15 +179,22 @@ function createEventListener(params)
   end
 
   -- pollEvents, processMessages, and processEvents should all operate independently and asynchronously.
-  processMessages(1)
-  processEvents(1)
+  _processMessages(1)
+  _processEvents(1)
 end
 
+--[[
+  The WebRequest API has a bug that lets it run even when the scene is unloaded.
+  The instance still has access to the script, so my original recursive polling
+  method would continue to run until Tabletop Simulator was closed. The solution
+  was to add a few fields into the surrounding scope and use the `onUpdate`
+  method to ensure the scene is still active before polling again.
+]]
 local POLLING_FOR_NEW_EVENTS = false
 local AWAITING_EVENTS_POLL_RESPONSE = false
 local EVENTS_INDEX = 1
 
-function getNextEvent()
+function _getNextEvent()
   local log_message = logString("Polling Event #"..EVENTS_INDEX.." ["..GAME_ID.."]".."...", "ServerClientConnection.pollEvents", "[INFO]", false, true)
   log("\n"..log_message)
 
@@ -268,19 +275,19 @@ function _pollEvents(index)
     EVENTS_INDEX = index
   end
 
-  getNextEvent()
+  _getNextEvent()
 end
 
 function onUpdate()
   if POLLING_FOR_NEW_EVENTS and not AWAITING_EVENTS_POLL_RESPONSE then
-    getNextEvent()
+    _getNextEvent()
   end
 end
 
 --[[
   Deserializes messages into the event_queue
 ]]
-function processMessages(index)
+function _processMessages(index)
   Wait.condition(
     function()
       local payload = JSON.decode(MESSAGE_QUEUE[index])
@@ -289,7 +296,7 @@ function processMessages(index)
       -- Messages map to the event_queue 1-to-1.
       -- The order messages arrive from the server matters.
       EVENT_QUEUE[index] = payload
-      processMessages(index+1)
+      _processMessages(index+1)
     end,
     -- Waits until there's a message to parse.
     function() return MESSAGE_QUEUE[index] ~= nil end
@@ -300,7 +307,7 @@ end
   Publish events to the EventBus, blocking until the EventBus has notified
   us that all subscribers have finished processing the event.
 ]]
-function processEvents(index)
+function _processEvents(index)
   --[[
     The first event may not arrive right away. Each call to this function creates a
     coroutine that waits until the payload associated with the received message is 
@@ -327,7 +334,7 @@ function processEvents(index)
       end
 
       EVENT_QUEUE[index] = false -- Handoff has happened. Free data up
-      processEvents(index+1)
+      _processEvents(index+1)
       CURRENT_EVENT_INDEX = CURRENT_EVENT_INDEX + 1
     end,
     function()
