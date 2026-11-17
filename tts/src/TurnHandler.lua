@@ -87,18 +87,24 @@ function onTurnStart(params)
 
   local player = PlayerManager.call("getPlayerById", player_id)
   if not player then -- DEBUG
-    log("Player with ID ["..player_id.."] not found.", "PlayerManager.onPlayerTurn", "[ERROR]", false, true)
+    local log_message = logString("Player with ID ["..player_id.."] not found.", "PlayerManager.onPlayerTurn", "[ERROR]", false, true)
+    log("\n"..log_message)
     return
   end
-  log(player.display_name.."'s ["..player.user_type.."] turn is starting")
 
-  local params = {
-    data = params.data,
-    onFinish_params = ExternalScript_onFinish_params
-  }
+  if player.user_type == "bot" then
+    local log_message = logString(player.display_name.."'s ["..player.user_type.."] turn is starting", "TurnHandler.onTurnStart", "[INFO]", false, true)
 
-  lockExternalScriptMutex()
-  PlayerManager.call("startPlayerTurn", params)
+    local params = {
+      data = params.data,
+      onFinish_params = ExternalScript_onFinish_params
+    }
+    lockExternalScriptMutex()
+    PlayerManager.call("startPlayerTurn", params)
+  else
+    local log_message = logString("Player action for "..player.display_name.." ["..player.user_id.."] received. Ignoring event.", "TurnHandler.onTurnStart", "[INFO]", false, true)
+    log(log_message)
+  end
 
   Wait.condition(
     function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
