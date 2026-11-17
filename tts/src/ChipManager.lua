@@ -10,7 +10,8 @@ local ChipStackId = {
   Stack    = " (Stack)",
   Bet      = " (Bet)",
   Exchange = " (Exchange)",
-  Pot      = " (Pot)"
+  Pot      = " (Pot)",
+  Pending  = " (Pending)"
 }
 
 CHIP_DENOMINATION_RELATIVE_POSITION = {
@@ -28,6 +29,7 @@ function init(params)
   Zones = params.Zones
   BotChipExchangeStackZone = params.Zones.bot_chip_exchange_stack_zone
   ChipExchangeStackZone    = params.Zones.chip_exchange_stack_zone
+  PotZone                  = params.Zones.pot_zone
   PotStackZone             = params.Zones.pot_stack_zone
   log("ChipManager initialized")
 end
@@ -52,7 +54,7 @@ end
   them and where they will be.
 
   player = <Player>|nil
-  stack_type = "stack"|"bet"|"exchange"|"pot"
+  stack_type = "stack"|"bet"|"exchange"|"pot"|"pending"
 ]]
 function generateChipData(player, stack_type)
   if string.lower(stack_type) == "pot" then
@@ -70,12 +72,12 @@ function generateChipData(player, stack_type)
     return { name = "- "..player.display_name.." (Bet)", memo = player.user_id..ChipStackId.Bet }
   elseif string.lower(stack_type) == "exchange" then
     return { name = "- "..player.display_name.." (Exchange)", memo = player.user_id..ChipStackId.Exchange }
+  elseif string.lower(stack_type) == "pending" then
+    return { name = "- "..player.display_name.." (Pending)", memo = player.user_id..ChipStackId.Pending}
   else
     log("Invalid stack_type provided", "ChipManager.generateChipData", "[ERROR]", false, true)
   end
 end
-
-
 
 function getAllBetChips()
   local betted_chips = {}
@@ -719,11 +721,13 @@ function getChipsForPlayerById(user_id)
   local stack_chip_memo    = generateChipData(player, "stack").memo
   local bet_chip_memo      = generateChipData(player, "bet").memo
   local exchange_chip_memo = generateChipData(player, "exchange").memo
+  local pending_chip_memo  = generateChipData(player, "pending").memo
 
   local chips = {
     stack    = getChipsByMemo(stack_chip_memo),
     bet      = getChipsByMemo(bet_chip_memo),
-    exchange = getChipsByMemo(exchange_chip_memo)
+    exchange = getChipsByMemo(exchange_chip_memo),
+    pending  = getChipsByMemo(pending_chip_memo)
   }
 
   return chips
@@ -823,4 +827,57 @@ function moveBetsToPot(onFinish_params)
     function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
     _allMutexesReleased
   )
+end
+
+--[[
+  Modifies the metadata of chips in the betting zone for a player so they can
+  be differentiated from their bet and stack.
+
+  params = {
+    user_id = string,
+    chips   = table
+  }
+]]
+function markChipsAsPending(params)
+  local chips = params.chips
+  if chips == nil or params.chips == 0 then return end
+
+  local player = PlayerManager.call("getPlayerById", params.user_id)
+  local pending_chip_data = generateChipData(player, "pending")
+
+  for chip in chips do
+    updateChipMetaData(chip, pending_chip_data.name, pending_chip_data.memo)
+  end
+end
+
+--[[
+  params = {
+    user_id = string
+  }
+]]
+function markPendingChipsAsBet(params)
+  local chips = getChipsForPlayerById(params.user_id)
+  local player = PlayerManager.call("getPlayerById", params.user_id)
+  local bet_chip_data = generateChipData(player, "bet")
+  for _, chips in pairs(chips.pending) do
+    for chip in chips do
+      updateChipMetaData(chip, bet_chip_data.name, bet_chip_data.memo)
+    end
+  end
+end
+
+ --[[
+  params = {
+    user_id = string
+  }
+ ]]
+function markPendingChipsAsStack(params)
+  local chips = getChipsForPlayerById(params.user_id)
+  local player = PlayerManager.call("getPlayerById", params.user_id)
+  local bet_chip_data = generateChipData(player, "stack")
+  for _, chips in pairs(chips.pending) do
+    for chip in chips do
+      updateChipMetaData(chip, bet_chip_data.name, bet_chip_data.memo)
+    end
+  end
 end
