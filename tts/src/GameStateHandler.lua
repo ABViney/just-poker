@@ -70,6 +70,10 @@ end
   expected data and the following table. This table describes what the external script
   should invoke upon completion of its actions.
 ]]
+local awaiting_external_script = false
+function lockExternalScriptMutex() awaiting_external_script = true end
+function unlockExternalScriptMutex() awaiting_external_script = false end
+function isExternalScriptMutexUnlocked() return not awaiting_external_script end
 local GameManager_onFinish_params = {
   service = self,
   callback = "unlockExternalScriptMutex",
@@ -142,14 +146,53 @@ function onGameStateReceived(params)
       player.state = player_data.state
     end
 
-    -- TODO: Check if params.data.table.current_round.current_player_position
-    -- points to a human player. if it does, publish an event that has the 
-    -- PlayerManager announce and record the player's move
-    local current_player = params.data.table.current_round.current_player_position
-    
+    local table = data.table
+    local current_round           = table.current_round.current_round_type
+    local current_player_position = table.current_round.current_player_position
+    local current_player          = _getPlayerStateByPosition(table.players, current_player_position)
+    if current_round == "unset" or current_round == "completed" 
+      or current_player.user_type == "bot" then
+      -- If the player is a bot then they'll submit their PlayerActionDto autonomously
+      onFinish_params.service.call(onFinish_params.callback, onFinish_params.args)
+      return
+    end
 
+    local current_stack_amount = _getValueOfChips(current_player.stack)
 
-    onFinish_params.service.call(onFinish_params.callback, onFinish_params.args)
+    -- It makes life easier if the player knows how much they need to chip in during their turn
+    local minimum_chip_in = 0
+    if current_round == "setup" then
+      -- The player must ante either the small or big blind
+      if current_player_position == table.small_blind_position then
+        minimum_chip_in = table.current_hand.small_blind
+      elseif current_player_position == table.big_blind_position then
+        minimum_chip_in = table.current_hand.big_blind
+      end
+    else
+      -- The minimum chip in is the difference between the value of the player's
+      -- current bet and the value of the current aggressor's bet.
+      
+      local current_aggressor_bet_sum = _getCurrentMaxBet(table.players)
+      local current_player_bet_sum = _getValueOfChips(current_player.current_bet)
+      log("FIGURING OUT HOW MUCH GOTTA CHIP IN BABY\nCurrent Agressor="..current_aggressor_bet_sum.."\nCurrent Player="..current_player_bet_sum)
+      
+      minimum_chip_in = current_aggressor_bet_sum - current_player_bet_sum
+    end
+
+    -- A human player must take their turn.
+    local params = {
+      -- Spoofing a PlayerActionDTO
+      data = {
+        player_id            = current_player.user_id,
+        current_round        = current_round,
+        current_stack_amount = current_stack_amount,
+        minimum_chip_in      = minimum_chip_in
+      },
+
+      onFinish_params = onFinish_params
+    }
+
+    PlayerManager.call("startPlayerTurn", params)
     return
   end
 
@@ -232,4 +275,33 @@ end
 
 function onGameOver(params)
   log("GameStateHandler.onGameOver not implemented", "Not implemented", "[ERROR]")
+end
+
+--[[
+  Utils
+]]
+
+function _getPlayerStateByPosition(player_states, position)
+  for player_state in player_states do
+    if player_state.position == position then
+      return player_state
+    end
+  end
+end
+
+function _getValueOfChips(chips)
+  local value = 0
+  for denomination, quantity in pairs(chips) do
+    value = value + tonumber(denomination) * quantity
+  end
+  return value
+end
+
+function _getCurrentMaxBet(players)
+  local max_bet = 0
+  for player in players do
+    local player_current_bet = _getValueOfChips(player.current_bet)
+    if player_current_bet > max_bet then max_bet = player_current_bet end
+  end
+  return max_bet
 end
