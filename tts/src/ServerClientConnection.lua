@@ -15,11 +15,13 @@
 local GameStateHandler
 local Logger
 local EventBus
+local UserRepository
 
 function init(params)
   GameStateHandler = params.Services.GameStateHandler
   EventBus         = params.Services.EventBus
   Logger           = params.Services.ExternalLogConnection
+  UserRepository   = params.Services.UserRepository
 
   log("ServerClientConnection initialized")
 end
@@ -69,10 +71,13 @@ DEFAULT_START_GAME_ENDPOINT    = "https://game.bahms.org/api/poker/game/{game_id
 USER_ENDPOINT                  = "https://game.bahms.org/api/poker/user/me"
 
 DEFAULT_START_HAND_ENDPOINT    = "https://game.bahms.org/api/poker/game/{game_id}/hand"
-START_HAND_ENDPOINT    = nil
+START_HAND_ENDPOINT = nil
 
 DEFAULT_DECK_ORDER_ENDPOINT    = "https://game.bahms.org/api/poker/game/{game_id}/deck"
-DECK_ORDER_ENDPOINT   = nil
+DECK_ORDER_ENDPOINT = nil
+
+DEFAULT_PLAYER_ACTION_ENDPOINT = "https://game.bahms.org/api/poker/game/{game_id}/action"
+PLAYER_ACTION_ENDPOINT = nil
 
 end -- Connection configuration
 
@@ -101,6 +106,7 @@ function setup(params)
   POKER_SERVICE_ENDPOINT = string.gsub(DEFAULT_POKER_SERVICE_ENDPOINT, "{game_id}", params.game_id)
   DECK_ORDER_ENDPOINT    = string.gsub(DEFAULT_DECK_ORDER_ENDPOINT, "{game_id}", params.game_id)
   START_HAND_ENDPOINT    = string.gsub(DEFAULT_START_HAND_ENDPOINT, "{game_id}", params.game_id)
+  PLAYER_ACTION_ENDPOINT = string.gsub(DEFAULT_PLAYER_ACTION_ENDPOINT, "{game_id}", params.game_id)
   
   GAME_ID                = params.game_id
   GameStateHandler.setVar("GAME_ID", GAME_ID)
@@ -654,7 +660,71 @@ function getDeckOrder(deckOrderReceived_params)
       deckOrderReceived_params.service.call(deckOrderReceived_params.callback, body.data)
     end
   )
+end
 
+--[[
+  Posts a player action.
+
+  params = {
+    ...  
+    auth_token = string,
+    player_action_dto = {
+
+    }
+
+    onFinish_params = {
+      service  = <Scripting Object>,
+      callback = string
+    }
+  }
+  
+  Invokes the callback and passes it a table containing a boolean for if the player joined,
+  an error if the player was not joined,
+]]
+function postPlayerAction(params)
+  local player_action_dto = params.player_action_dto
+  local onFinish_params = params.onFinish_params
+  
+  local user_id = player_action_dto.player_id
+  local user_profile = UserRepository.call("getUserById", user_id)
+  local auth_token = user_profile.auth_token
+
+  local payload = JSON.encode(player_action_dto)
+
+  local log_message = logString(player_action_dto, "ServerClientConnection.postPlayerAction", "[INFO]", false, true)
+  log(log_message)
+
+  WebRequest.custom(
+    PLAYER_ACTION_ENDPOINT,
+    "POST",
+    true,                               -- I AM handling the response body
+    payload,                                 -- Body is an empty string
+    {["Authorization"] = "Bearer "..auth_token},
+    function(instance)
+      local result = {
+        copy_of_args = params,
+      }
+
+      local response_code = instance.response_code
+      local body = JSON.decode(instance.text)
+      if response_code == 200 then
+        -- Player DTO successfully posted
+        onFinish_params.service.call(onFinish_params.callback, result)
+        return
+      end
+
+      local error = {response_code = instance.response_code, text = instance.text}
+      local log_message = logString(error, "ServerClientConnection.joinPlayerToGame\nUnhandled response type.", "[ERROR]", false, true)
+      log(log_message)
+
+      local result = {
+        error        = error,
+        copy_of_args = params
+      }
+
+      onFinish_params.service.call(onFinish_params.callback, result)
+    end
+  )
 end
 
 function _logServerMessage(message)
