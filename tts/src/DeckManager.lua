@@ -154,6 +154,7 @@ local BurnCards   = {}
 local StreetCards = {}
 
 local BlindManager
+local Global
 local PlayerManager
 
 local Deck
@@ -181,6 +182,7 @@ end
 
 function init(params)
   BlindManager   = params.Services.BlindManager
+  Global         = params.Services.Global
   PlayerManager  = params.Services.PlayerManager
 
   Deck           = params.Objects.initial_deck
@@ -440,6 +442,7 @@ end
   }
 --]]
 function dealHand(onFinish_params)
+  Global.call("disableCardStacking")
   -- Internal mutex for delaying the dealing of another card until the preceding
   -- one has finished moving
   local card_in_transit = false
@@ -597,6 +600,7 @@ function dealRiver(onFinish_params)
 end
 
 function gatherCards(onFinish_params)
+  Global.call("enableCardStacking")
   local cards_on_table = {}
   -- Hopin that the group method will group to the first index in the collection provided
   if Deck then table.insert(cards_on_table, Deck) end
