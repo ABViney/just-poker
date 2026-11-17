@@ -616,7 +616,7 @@ to be (normal|highlighted|pressed|disabled) but `normal` doesn't change anything
 <!-- END OF DEALER SECTION -->
 <!--                       -->
 
-<!-- <Defaults>
+<Defaults>
   <Panel class="TurnPanel"
     color="#8f8478"
     outline="#635341"
@@ -625,35 +625,38 @@ to be (normal|highlighted|pressed|disabled) but `normal` doesn't change anything
 </Defaults>
 
 <Panel
-  id="TurnPanelUI"
-  visibility="Black"
+  id="panel_player-action-menu"
   class="floating-panel"
   ignoreLayout="true"
   allowDragging="true"
-  rectAlignment="LowerCenter" offsetXY="0 250"
+  rectAlignment="MiddleLeft" offsetXY="0 -250"
   padding="10 10 10 10"
-  width="300" height="200"
+  width="300" height="150"
   returnToOriginalPositionWhenReleased="false"
   >
-  <TableLayout
-    autoCalculateHeight="false"
-    automaticallyRemoveEmptyColumns="false"
-    columnWidths="16"
+  <VerticalLayout
+    spacing="10"
   >
-    <Row preferredHeight="20"><Cell columnSpan="8"><Text>Hello WOrld!</Text></Cell></Row>
-    <Row />
-    <Row preferredHeight="30">
-      <Cell columnSpan="16">
-        <Button text="End Turn" onClick="onEndTurnButtonClicked"/>
-      </Cell>
-    </Row>
-  </TableLayout>
-  <!- <Button id="CloseButton"
-    width="20" height="20"
-    rectAlignment="UpperRight"
-    color="#990000"
-    textColor="#FFFFFF"
-    text="-"
-    onClick="minimizeTurnMenu"
-  /> ->
-</Panel> -->
+    <TableLayout
+      columnWidths="* 100"
+      cellSpacing="5"
+      autoCalculateHeight="True"
+    >
+      <Row preferredHeight="30">
+        <Cell><Text>Minimum to stay in: </Text></Cell>
+        <Cell><Text id="label_minimum-to-stay-in" text="0"/></Cell>
+      </Row>
+      <Row preferredHeight="30">
+        <Cell><Text>Current bet amount: </Text></Cell>
+        <Cell><Text id="label_current-bet-amount" text="0"/></Cell>
+      </Row>
+      
+    </TableLayout>
+    <Button
+      id="button_confirm-player-action"
+      height="100"
+      text="Placeholder"
+      onClick="03b336/_onPlayerActionButtonClicked"
+    />
+  </VerticalLayout>
+</Panel>
