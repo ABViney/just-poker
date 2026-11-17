@@ -8,7 +8,6 @@ local GAME_MASTER_AUTH_TOKEN
 local GAME_ID
 local GAME_STARTED = false
 
-
 local Objects
 local Services
 local Zones
@@ -39,6 +38,7 @@ function onLoad()
     ChipManager      = getObjectFromGUID("c56c2d"),
     DeckManager      = getObjectFromGUID("f7f04c"),
     EventBus         = getObjectFromGUID("0f9a75"),
+    Global           = self,
     PlayerManager    = getObjectFromGUID("03b336"),
     PotManager       = getObjectFromGUID("72d9ba"),
 
@@ -85,7 +85,9 @@ function onLoad()
   log("Initializing services...")
 
   for service in params.Services do
-    service.call("init", params)
+    if service ~= self then
+      service.call("init", params)
+    end
   end
 
   do -- Whatever buttons i created to help me test things
@@ -111,8 +113,8 @@ function onLoad()
 
   local get_deck_order = getObjectFromGUID("71225f")
   get_deck_order.createButton({
-    label=          "Log XML UI",
-    click_function= "logXMLUI",
+    label=          "Mutate observable value",
+    click_function= "mutateValue",
     function_owner= self,
     position=       {0, 0.5, 1},
     height=300, width=1000, font_size=100
@@ -130,6 +132,37 @@ end
 
 function onUpdate() end
 
+
+--[[
+  START EVENT OVERRIDES
+
+  Certain events are only registered by the Global script.
+  This does complicate encapsulation, but it is what it is.
+]]
+local CARD_STACKING_ENABLED = true
+function enableCardStacking()
+  local log_message = logString("Enabling card stacking", "Global.enableCardStacking", "[INFO]", false, true)
+  log(log_message)
+  CARD_STACKING_ENABLED = true
+end
+function disableCardStacking() 
+  local log_message = logString("Enabling card stacking", "Global.enableCardStacking", "[INFO]", false, true)
+  log(log_message)
+  CARD_STACKING_ENABLED = false  
+end
+-- Event override for object entering container. If this is false, the object does not enter.
+function tryObjectEnterContainer(_, object)
+  if not CARD_STACKING_ENABLED then
+    if object.type == "Card" then
+      return false
+    end
+  end
+  return true
+end
+
+--[[
+  END   EVENT OVERRIDES
+]]
 
 --[[
   Everything below this is for managing the UI.
@@ -216,8 +249,8 @@ function onUpdate() end
     auth_token = "bahms.hguVUkyjJyE5gvlL.J0vYraHLeKc_79FyNyrSOYo8cf1IGqG9RiXXZLCKXaI",
 
     -- Number of players
-    number_of_human_players = 0,
-    number_of_bot_players   = 8,
+    number_of_human_players = 1,
+    number_of_bot_players   = 1,
 
     -- In-game players' auth tokens
     player_auth_tokens = {},
@@ -804,6 +837,13 @@ function onUpdate() end
             -- the user which ones were invalid.
             if auth_tokens_are_valid then
               local UserRepository = Services.UserRepository
+              for i=2, #users do
+                local addUser_params = {
+                  userDTO    = users[i],
+                  auth_token = auth_tokens[i]
+                }
+                UserRepository.call("addUser", addUser_params)
+              end
             else
               broadcastToColor(errors, "Black", "Red")
             end
@@ -1161,6 +1201,11 @@ function onUpdate() end
 
 
 --[[
+    TODO: I missed this. I can target functions in other scripts.
+    The format is onEventHandle="<GUID>/<func_name>"
+]]
+
+--[[
   This callback just informs me the result of the call to get the deck
   order.
 
@@ -1191,7 +1236,17 @@ function onStartHandButtonPressed()
   Services.ServerClientConnection.call("startNextHand", startNextHand_params)
 end
 
+--[[
+  START PLAYER TURN UI
+]]
 
+function showPlayerTurnUI(color)
+  -- Do nothing rn until we know it works
+end
+
+--[[
+  END   PLAYER TURN UI
+]]
 
 function logXMLUI()
   print("frick")
