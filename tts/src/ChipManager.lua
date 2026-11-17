@@ -739,6 +739,19 @@ function getBettedChips()
   return chips
 end
 
+function getStackChipsInBettingZoneForPlayer(user_id)
+  local player = PlayerManager.call("getPlayerById", user_id)
+  local stack_chip_memo = generateChipData(player, "stack").memo
+
+  local chips = {}
+  for object in PotZone.getObjects() do
+    if PotManager.call("isChip", object) and object.memo == stack_chip_memo then
+      table.insert(chips, object)
+    end
+  end
+  return chips
+end
+
 function moveBetsToPot(onFinish_params)
   -- Completion of this function determined is when all players with active bets have had their bets collected
   local mutex_indices = {}
