@@ -31,6 +31,7 @@
 local ChipManager
 local DeckManager
 local PotManager
+local ServerClientConnection
 local TurnManager
 
 local ChipExchangeZone
@@ -44,9 +45,10 @@ local PLAYERS = {}
 local CURRENT_PLAYER = nil
 
 function init(params)
-  ChipManager  = params.Services.ChipManager
-  DeckManager  = params.Services.DeckManager
-  PotManager   = params.Services.PotManager
+  ChipManager            = params.Services.ChipManager
+  DeckManager            = params.Services.DeckManager
+  PotManager             = params.Services.PotManager
+  ServerClientConnection = params.Services.ServerClientConnection
 
   ChipExchangeZone         = params.Zones.chip_exchange_zone
   ChipExchangeStackZone    = params.Zones.chip_exchange_stack_zone
@@ -93,6 +95,9 @@ function isAssociativeMutexUnlocked(index) return not associative_mutex[index] e
     data = {
       player_id = string
 
+      -- If human player_id
+      current_round = string,
+      minimum_chip_in = number
     },
 
     onFinish_params = {
@@ -115,6 +120,14 @@ function startPlayerTurn(params)
       onFinish_params = PlayerTurn_onFinish_params
     }
     animatePlayerAction(animate_player_params)
+  else
+    _trackPlayerTurn(
+      player,
+      params.data.current_round,
+      params.data.current_player_stack_amount,
+      params.data.minimum_chip_in
+    )
+    
   end
 
   Wait.condition(
@@ -174,7 +187,8 @@ function revealActiveHands(onFinish_params)
     local index = i
     local mutex_key = "Show_"..index
     
-    if player.user_type == "bot" then
+    -- NOTE: Disabled until i add a way to track when a player has shown their hand
+    -- if player.user_type == "bot" then
       log("Animating "..player.display_name.."'s action")
       lockAssociativeMutex(mutex_key)
 
@@ -193,7 +207,7 @@ function revealActiveHands(onFinish_params)
         function() log("Unlocking "..mutex_key) promises[index] = true end,
         function() return isAssociativeMutexUnlocked(mutex_key) end
       )
-    end
+    -- end
     
     -- Todo: Figure out how to ensure players have shown their cards.
     -- That'll be fun :^)
@@ -609,6 +623,396 @@ function animateBet(player, chips)
 end
 
 end -- Bot animations
+
+--[[
+  START TRACKING PLAYER TURN
+  Conjuring a PlayerActionDTO from the board state is a different set of complicated
+  than animating one.
+]]
+
+-- UI IDs
+local playerAction_window_id              = "panel_player-action-menu"
+local playerAction_minimumToStayIn_id     = "label_minimum-to-stay-in"
+local playerAction_currentBetAmount_id    = "label_current-bet-amount"
+local playerAction_confirmPlayerAction_id = "button_confirm-player-action"
+
+CARD_POSITION = {
+  no_cards = "no_cards",
+  in_hand  = "in_hand",
+  folded   = "folded",
+  showing  = "showing",
+  unknown  = "unknown" -- If both cards aren't in the same position
+}
+
+--[[
+  Creates a persistent observer that invokes a callback whenever the 
+  observed field changes.
+
+  The observer self-terminates and disposes once the `continue_observing`
+  field is set to false.
+
+  params = {
+    getValue     = func <any>,
+    onChange     = func <void>,
+    continue_observing = boolean
+  }
+]]
+function _startMutationObserver(params)
+  local getValue           = params.getValue
+  local onChange           = params.onChange
+  local old_value          = getValue()
+
+  Wait.condition(
+    function()
+      if params.continue_observing then
+        onChange()
+        _startMutationObserver(params)
+      end
+    end,
+    function() return old_value ~= getValue() or not params.continue_observing end
+  )
+end
+
+-- This field specifically refers to the human player whose turn it is.
+-- nil if it is not a human's turn.
+local CURRENT_PLAYER               = nil
+-- Intents are limited based on the round.
+local CURRENT_ROUND                = nil
+-- Intents vary based on how many chips are put forward relative to the player's stack and the current bet
+local CURRENT_MINIMUM_CHIP_IN      = nil
+local CURRENT_PLAYER_STACK_AMOUNT  = nil
+
+-- Intent is derived from the location and orientation of the player's cards
+local CURRENT_PLAYER_CARD_POSITION = nil
+-- Need a reference to the player's chips to mark them while the request is sent
+local CURRENT_CHIPS_BEING_BET      = nil
+-- This field is just a courtesy to numerize the inferred bet
+local CURRENT_BET_VALUE            = nil
+
+-- The DTO is constantly rebuilt until it is sent so I can track if the player is
+-- in a valid state and relay what state is being submitted to them.
+local PLAYER_ACTION_DTO            = nil
+-- The result is set via a callback. A successful result means the player's turn has ended.
+local PLAYER_ACTION_RESULT         = nil
+
+function _resetTrackedFields()
+  CURRENT_PLAYER               = nil
+  CURRENT_ROUND                = nil
+  CURRENT_MINIMUM_CHIP_IN      = nil
+  CURRENT_PLAYER_STACK_AMOUNT  = nil
+  CURRENT_PLAYER_CARD_POSITION = nil
+  CURRENT_CHIPS_BEING_BET      = nil
+  CURRENT_BET_VALUE            = nil
+  PLAYER_ACTION_DTO            = nil
+  PLAYER_ACTION_RESULT         = nil
+end
+
+-- When the player clicks the button to submit their turn.
+function _onPlayerActionButtonClicked(player, value, id)
+  if CURRENT_PLAYER == nil then return end
+  if PLAYER_ACTION_DTO == nil then return end
+
+  -- While the request is processing, prevent the value of the chips being
+  -- bet from being modified.
+  local markChipsAsPending_params = {
+    user_id = CURRENT_PLAYER.user_id,
+    chips   = CURRENT_CHIPS_BEING_BET
+  }
+  ChipManager.call("markChipsAsPending", markChipsAsPending_params)
+  
+  Global.UI.setAttribute(playerAction_confirmPlayerAction_id, "interactable", "False")
+
+  local postPlayerAction_params = {
+    player_action_dto = PLAYER_ACTION_DTO,
+
+    onFinish_params = {
+      service  = self,
+      callback = "_onPostPlayerActionResponseReceived"
+    }
+  }
+  ServerClientConnection.call("postPlayerAction", postPlayerAction_params)
+end
+
+-- Have to use a callback to capture the result from posting the player action via ServerClientConnection.
+function _onPostPlayerActionResponseReceived(result)
+  local player_action_result = {
+    player_action_dto = result.copy_of_args.player_action_dto
+  }
+  if result.error then
+    player_action_result.error = {
+      response_code = result.error.response_code,
+      text          = result.error.text
+    }
+  end
+  PLAYER_ACTION_RESULT = player_action_result
+end
+
+function updateCurrentChipsBeingBet()
+  if CURRENT_PLAYER == nil then return end
+  CURRENT_CHIPS_BEING_BET = {table.unpack(ChipManager.call("getStackChipsInBettingZoneForPlayer", CURRENT_PLAYER.user_id))}
+  CURRENT_BET_VALUE = 0
+  for chip in CURRENT_CHIPS_BEING_BET do
+    CURRENT_BET_VALUE = CURRENT_BET_VALUE + chip.getValue() * math.abs(chip.getQuantity())
+  end
+end
+
+--[[
+  We can determine what the player is doing with their cards
+  by their location and rotation.
+]]
+function updateCurrentPlayerCardPosition()
+  if CURRENT_PLAYER == nil then return end
+
+  if #CURRENT_PLAYER.hole ~= 2 then
+    CURRENT_PLAYER_CARD_POSITION = CARD_POSITION.no_cards
+    log("No cards")
+    return
+  end
+
+  local number_of_cards_in_hand = 0
+  -- Check if cards are in the player's hand
+  for object in CURRENT_PLAYER.zones.hand_zone.getObjects() do
+    if object.type == "Card" then
+      for card in CURRENT_PLAYER.hole do
+        if card == object then
+          number_of_cards_in_hand = number_of_cards_in_hand + 1
+          break
+        end
+      end
+    end
+  end
+
+  if number_of_cards_in_hand == 2 then 
+    CURRENT_PLAYER_CARD_POSITION = CARD_POSITION.in_hand
+    log("In hand")
+    return
+  end
+
+  local number_of_cards_face_down = 0
+  local number_of_cards_face_up   = 0
+  for card in CURRENT_PLAYER.hole do
+    if card.is_face_down then number_of_cards_face_down = number_of_cards_face_down + 1
+    else number_of_cards_face_up = number_of_cards_face_up + 1
+    end
+  end
+
+  if number_of_cards_face_down == 2 then
+    CURRENT_PLAYER_CARD_POSITION = CARD_POSITION.folded
+    log("folded")
+    return
+  end
+  if number_of_cards_face_up == 2 then
+    CURRENT_PLAYER_CARD_POSITION = CARD_POSITION.showing
+    log("showing")
+    return
+  end
+
+  log("unknown")
+  CURRENT_PLAYER_CARD_POSITION = CARD_POSITION.unknown
+end
+
+function updatePlayerActionDto()
+  if CURRENT_PLAYER == nil then return end
+  local player_action_dto = { player_id = CURRENT_PLAYER.user_id }
+
+  player_action_dto.chips = {}
+  for chip in CURRENT_CHIPS_BEING_BET do
+    local denomination = tostring(chip.getValue())
+    local count        = math.abs(chip.getQuantity())
+    if not player_action_dto.chips[denomination] then
+      player_action_dto.chips[denomination] = 0
+    end
+    player_action_dto.chips[denomination] = player_action_dto.chips[denomination] + count
+  end
+
+  if CURRENT_BET_VALUE == CURRENT_PLAYER_STACK_AMOUNT then
+    player_action_dto.intent = "all_in"
+  elseif CURRENT_ROUND == "setup" then
+    -- `all_in` is transformed to `ante` by the server if necessary
+    if CURRENT_BET_VALUE == CURRENT_MINIMUM_CHIP_IN then
+      -- Can only put forward up to the blind cost for the ante
+      player_action_dto.intent = "ante"
+    end
+  elseif CURRENT_PLAYER_CARD_POSITION == CARD_POSITION.folded then
+    player_action_dto.intent = "fold"
+    player_action_dto.chips = nil -- Don't bet chips if the player is folding.
+  elseif CURRENT_BET_VALUE == 0 and CURRENT_MINIMUM_CHIP_IN == 0 then
+    player_action_dto.intent = "check"
+    player_action_dto.chips = nil
+  elseif CURRENT_BET_VALUE == CURRENT_MINIMUM_CHIP_IN then
+    player_action_dto.intent = "call"
+  elseif CURRENT_BET_VALUE > CURRENT_MINIMUM_CHIP_IN then
+    player_action_dto.intent = "raise"
+  end
+
+  PLAYER_ACTION_DTO = player_action_dto
+end
+
+function updatePlayerActionMenu()
+  Global.UI.setAttribute(playerAction_currentBetAmount_id, "text", tostring(CURRENT_BET_VALUE or 0))
+  local intent = PLAYER_ACTION_DTO and PLAYER_ACTION_DTO.intent
+  Global.UI.setAttribute(playerAction_confirmPlayerAction_id, "text", intent or "Waiting for player...")
+  if intent ~= nil then
+    Global.UI.setAttribute(playerAction_confirmPlayerAction_id, "interactable", true)
+  else
+    Global.UI.setAttribute(playerAction_confirmPlayerAction_id, "interactable", false)
+  end
+end
+
+function _trackPlayerTurn(player, current_round, current_player_stack_amount, minimum_chip_in)
+  CURRENT_PLAYER = player
+  CURRENT_ROUND = current_round
+  CURRENT_PLAYER_STACK_AMOUNT = current_player_stack_amount
+  CURRENT_MINIMUM_CHIP_IN = minimum_chip_in
+
+  -- Initial check for what chips are in the betting zone
+  updateCurrentChipsBeingBet()
+  -- Initial check for where cards are.
+  updateCurrentPlayerCardPosition()
+  -- See if we can generate a valid dto from the current state
+  updatePlayerActionDto()
+
+  -- Event handlers cover chips entering/leaving the betting zone, as well
+  -- as being picked up/dropped by the player.
+  local observeBet_params = {
+    getValue = function() return CURRENT_CHIPS_BEING_BET end,
+    onChange = updatePlayerActionDto,
+    continue_observing = true
+  }
+  -- Event handlers cover cards entering/leaving the player's hand zone, as well
+  -- as being rotated by the player.
+  local observeCards_params = {
+    getValue = function() return CURRENT_PLAYER_CARD_POSITION end,
+    onChange = updatePlayerActionDto,
+    continue_observing = true
+  }
+  -- These two update the UI to relay the current inference to the player.
+  local observeBetValue_params = {
+    getValue = function() return CURRENT_BET_VALUE end,
+    onChange = updatePlayerActionMenu,
+    continue_observing = true
+  }
+  local observePlayerActionDto_params = {
+    getValue = function() return PLAYER_ACTION_DTO end,
+    onChange = updatePlayerActionMenu,
+    continue_observing = true
+  }
+  -- Contexts are stored in a collection. I either need all the observers or none of them,
+  -- so shutdown is simple.
+  local observer_contexts = { observeBet_params, observeCards_params, observeBetValue_params, observePlayerActionDto_params }
+  for context in observer_contexts do
+    _startMutationObserver(context)
+  end
+
+  -- Setting up the UI
+  local visible_to = "Black" --Debug. Menu should only be visible to the player making a decision.
+  visible_to = visible_to.."|"..CURRENT_PLAYER.color
+  Global.UI.setAttribute(playerAction_window_id, "visibility", visible_to)
+  Global.UI.setAttribute(playerAction_minimumToStayIn_id, "text", CURRENT_MINIMUM_CHIP_IN)
+  updatePlayerActionMenu()
+
+  _awaitValidActionPosted(observer_contexts)
+end
+
+function _awaitValidActionPosted(observer_contexts)
+  Wait.condition(
+    function()
+      -- We know that PLAYER_ACTION_RESULT is not nil if we're running this function.
+      -- My linter is stupid, this just makes some squigglies go away.
+      if PLAYER_ACTION_RESULT and PLAYER_ACTION_RESULT.error then
+        local log_message = logString(PLAYER_ACTION_RESULT.error, "PlayerManager._awaitValidActionPosted", "[ERROR]", false, true)
+        log(log_message)
+
+        local error = PLAYER_ACTION_RESULT.error
+
+        PLAYER_ACTION_RESULT = nil
+        local markPendingChips_params = { user_id = CURRENT_PLAYER.user_id }
+        ChipManager.call("markPendingChipsAsStack", markPendingChips_params)
+        broadcastToColor(error.text, "Black", "Red")
+
+        _awaitValidActionPosted(observer_contexts)
+        return
+      end
+
+      -- If PLAYER_ACTION_RESULT is not an error response, then great.
+      -- The turn was successfully posted.
+      -- We can reset the fields, set the metdata for the player's chips,
+      -- and release the mutex for the player turn.
+      local log_message = logString(PLAYER_ACTION_RESULT, "PlayerManager._awaitValidActionPosted", "[INFO]", false, true)
+      log(log_message)
+
+      local player_action_dto = PLAYER_ACTION_RESULT.player_action_dto
+      local intent = player_action_dto.intent
+      local markPendingChips_params = { user_id = player_action_dto.player_id }
+      if intent == "fold" or intent == "check" then
+        -- If the player folded, their chips are not betted.
+        ChipManager.call("markPendingChipsAsStack", markPendingChips_params)
+      else
+        ChipManager.call("markPendingChipsAsBet", markPendingChips_params)
+      end
+
+      CURRENT_PLAYER.state = intent
+
+      _resetTrackedFields()
+      unlockPlayerTurnMutex()
+    end,
+    function() return PLAYER_ACTION_RESULT ~= nil end
+  )
+end
+
+do -- TTS Event listeners
+
+  -- Track if cards enter hand or chips enter betting zone
+  function onObjectEnterZone(zone, object)
+    if CURRENT_PLAYER == nil then return end
+    if zone == PotZone then
+      if object.type == "Chip" then updateCurrentChipsBeingBet() end
+      return
+    end
+    if zone == CURRENT_PLAYER.zones.hand_zone then
+      if object.type == "Card" then updateCurrentPlayerCardPosition() end
+      return
+    end
+  end
+
+  -- Track if cards leave hand or chips leave betting zone
+  function onObjectLeaveZone(zone, object)
+    if CURRENT_PLAYER == nil then return end
+    if zone == PotZone then
+      if object.type == "Chip" then
+        log("Card entered "..CURRENT_PLAYER.color.." hand zone")
+        updateCurrentChipsBeingBet()
+      end
+      return
+    end
+    if zone == CURRENT_PLAYER.zones.hand_zone then
+      if object.type == "Card" then
+        log("Card left "..CURRENT_PLAYER.color.." hand zone")
+        updateCurrentPlayerCardPosition()
+      end
+      return
+    end
+  end
+
+  -- Track if the player drops a card or chip(s)
+  function onObjectDrop(_, object)
+    if CURRENT_PLAYER == nil then return end
+    if object.type == "Chip" then updateCurrentChipsBeingBet() end
+    if object.type == "Card" then updateCurrentPlayerCardPosition() end
+  end
+
+  -- Track if the player flips a card
+  function onObjectRotate(object, spin, flip, player_color, old_spin, old_flip)
+    if CURRENT_PLAYER == nil then return end
+    if object.type == "Card" then
+      updateCurrentPlayerCardPosition()
+    end
+  end
+
+end -- TTS Event listeners
+--[[
+  END   TRACKING PLAYER TURN
+]]
 
 --[[
   Chips are "spawned" when taken out of a stack. 2 chips are spawned when a stack
