@@ -49,6 +49,10 @@ function isAssociativeMutexUnlocked(index) return not associative_mutex[index] e
 
 end
 
+function isChip(object)
+  return string.find(object.type, "Chip") and object.memo
+end
+
 --[[
   Generates a table for the name and memo to be assigned to chips based on who owns
   them and where they will be.
@@ -702,7 +706,7 @@ end
 function getChipsByMemo(memo)
   local chips = {}
   for object in getObjects() do
-    if PotManager.call("isChip", object) and object.memo == memo then
+    if isChip(object) and object.memo == memo then
       local denomination = tostring(object.getValue())
       if not chips[denomination] then
         chips[denomination] = {}
@@ -736,7 +740,7 @@ end
 function getBettedChips()
   local chips = {}
   for object in getObjects() do
-    if PotManager.call("isChip", object) and string.sub(object.memo, -#ChipStackId.Bet) == ChipStackId.Bet then
+    if isChip(object) and string.sub(object.memo, -#ChipStackId.Bet) == ChipStackId.Bet then
       table.insert(chips, object)
     end
   end
@@ -749,7 +753,7 @@ function getStackChipsInBettingZoneForPlayer(user_id)
 
   local chips = {}
   for object in PotZone.getObjects() do
-    if PotManager.call("isChip", object) and object.memo == stack_chip_memo then
+    if isChip(object) and object.memo == stack_chip_memo then
       table.insert(chips, object)
     end
   end

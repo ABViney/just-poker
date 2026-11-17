@@ -329,7 +329,6 @@ end
 ]]
 function payoutPot(data)
   lockRoundHandlerMutex()
-  -- Right now we don't have an event specific to when players 
 
   if #data == 0 then
     -- Just some stupid edge case i thought of

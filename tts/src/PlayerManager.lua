@@ -278,7 +278,6 @@ function setPlayers(players)
     starting_seat = starting_seat
 
   -- Give player chips and put their bets (if any) forward
-    PotManager.call("initializeChipsMapForPlayerId", player.user_id)
     local player_chips = ChipManager.call("initializeChipsForPlayer", player)
     player.stack = player_chips.stack
     player.bet = player_chips.current_bet
@@ -406,7 +405,7 @@ function updatePlayerStackAndBet(player)
   local chips_for_this_player = {}
 -- Getting a reference to all chip stacks on the table for this player
   for object in getObjects() do
-    if PotManager.call("isChip", object) and string.find(object.memo, player.user_id) then
+    if ChipManager.call("isChip", object) and string.find(object.memo, player.user_id) then
       table.insert(chips_for_this_player, object)
     end
   end
