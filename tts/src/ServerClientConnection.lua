@@ -173,7 +173,7 @@ function createEventListener(params)
           local body = logString(instance.text)
           log("Response code: " .. response_code .. '\n' .. body, "Connecting to listener", "[INFO]", false, true)
   
-          pollEvents(1)
+          _pollEvents(1)
         end
     end)
   end
@@ -183,16 +183,15 @@ function createEventListener(params)
   processEvents(1)
 end
 
---[[
-  Polls the server for new events.
-  Adds new events to the "message_queue" to be processed.
+local POLLING_FOR_NEW_EVENTS = false
+local AWAITING_EVENTS_POLL_RESPONSE = false
+local EVENTS_INDEX = 1
 
-  index = int (Where in the message_queue this web request's response is stored)
-]]
-function pollEvents(index)
-  local log_message = logString("Polling Event #"..index.."...", "ServerClientConnection.pollEvents", "[INFO]", false, true)
+function getNextEvent()
+  local log_message = logString("Polling Event #"..EVENTS_INDEX.." ["..GAME_ID.."]".."...", "ServerClientConnection.pollEvents", "[INFO]", false, true)
   log("\n"..log_message)
 
+  
   WebRequest.custom(
     POKER_SERVICE_ENDPOINT,
     "GET",
@@ -207,54 +206,75 @@ function pollEvents(index)
           status = instance.response_code,
           error  = instance.error,
         }
-        local log_message = logString(error, "ServerClientConnection.pollEvents ("..index..")", "[ERROR]", false, true)
+        local log_message = logString(error, "ServerClientConnection.pollEvents ("..EVENTS_INDEX..")", "[ERROR]", false, true)
         log("\n"..log_message)
-
-        Wait.time(
-          function()
-            pollEvents(index)
-          end,
-          0.1
-        )
       end
+
+      local response_is_not_html_or_nil = true
 
       if instance.response_code == 504 then
         -- 504 is sent when the server timed out our request.
         -- Tabletop Simulator's WebRequest API doesn't have a TTL, in resposne to this we just need to poll again.
-        Wait.time(
-          function()
-            pollEvents(index)
-          end,
-          0.1
-        )
-        return
       elseif instance.response_code == 502 then
         -- 502 is sent when the server no longer holds a reference for that game.
         -- This notifies us that the game is over and that we will no longer receive events for this game_id.
-        local log_message = logString("Server has closed listener.", "ServerClientConnection.pollEvents ("..index..")", "[INFO]", false, true)
+        local log_message = logString("Server has closed listener.", "ServerClientConnection.pollEvents ("..EVENTS_INDEX..")", "[INFO]", false, true)
         log("\n"..log_message)
-        return
+        POLLING_FOR_NEW_EVENTS = false -- This will prevent further polling.
       elseif instance.response_code >= 400 then
         -- The only response codes we should be getting are 200, 502, and 504.
-        local log_message = logString("Unhandled response status ("..instance.response_code..")", "ServerClientConnection.pollEvents ("..index..")", "[CRITICAL]")
+        local log_message = logString("Unhandled response status ("..instance.response_code..")", "ServerClientConnection.pollEvents ("..EVENTS_INDEX..")", "[CRITICAL]")
         log("\n"..log_message)
-        return
+      elseif instance.text == nil or string.find(instance.text, "<html>") then
+        -- The reponse body should be JSON and not have any HTML in it.
+        local log_message = logString({[instance.response_code] = instance.text or "nil"}, "ServerClientConnection.pollEvents ("..EVENTS_INDEX..") Got some weird, third kind of response.", "[CRITICAL]", false, true)
+        log("\n"..log_message)
+        response_is_not_html_or_nil = false
       end
 
-      -- The reponse body should not have any HTML in it.
-      if instance.text == nil or string.find(instance.text, "<html>") then
-        local log_message = logString({[instance.response_code] = instance.text or "nil"}, "ServerClientConnection.pollEvents ("..index..") Got some weird, third kind of response.", "[CRITICAL]", false, true)
-        log("\n"..log_message)
-        return
+      if instance.response_code == 200 and response_is_not_html_or_nil then
+        -- A successful status message gives us data that we may need to act on.
+        -- Messages are stored to be eventually fielded by "processMessages"
+        MESSAGE_QUEUE[EVENTS_INDEX] = instance.text
+        _logServerMessage(instance.text)
+        EVENTS_INDEX = EVENTS_INDEX + 1
       end
 
-      -- A successful status message gives us data that we may need to act on.
-      -- Messages are stored to be eventually fielded by "processMessages"
-      MESSAGE_QUEUE[index] = instance.text
-      _logServerMessage(instance.text)
-      pollEvents(index+1)
+      AWAITING_EVENTS_POLL_RESPONSE = false
     end
   )
+
+  AWAITING_EVENTS_POLL_RESPONSE = true
+end
+
+--[[
+  Polls the server for new events.
+  Adds new events to the "message_queue" to be processed.
+
+  index = int (Where in the message_queue this web request's response is stored)
+]]
+function _pollEvents(index)
+  if POLLING_FOR_NEW_EVENTS then
+    local log_message = logString("Already polling events", "ServerClientConnection._pollEvents", "[WARNING]", false, true)
+    log(log_message)
+    return
+  end
+
+  local log_message = logString("Beginning to poll events for ["..GAME_ID.."]", "ServerClientConnection._pollEvents", "[INFO]", false, true)
+  log(log_message)
+
+  POLLING_FOR_NEW_EVENTS = true
+  if index ~= nil then
+    EVENTS_INDEX = index
+  end
+
+  getNextEvent()
+end
+
+function onUpdate()
+  if POLLING_FOR_NEW_EVENTS and not AWAITING_EVENTS_POLL_RESPONSE then
+    getNextEvent()
+  end
 end
 
 --[[
