@@ -3,7 +3,9 @@ local PotManager
 
 local Zones
 local BotChipExchangeStackZone
+local ChipExchangeZone
 local ChipExchangeStackZone
+local PotZone
 local PotStackZone
 
 local ChipStackId = {
@@ -28,6 +30,7 @@ function init(params)
 
   Zones = params.Zones
   BotChipExchangeStackZone = params.Zones.bot_chip_exchange_stack_zone
+  ChipExchangeZone         = params.Zones.chip_exchange_zone
   ChipExchangeStackZone    = params.Zones.chip_exchange_stack_zone
   PotZone                  = params.Zones.pot_zone
   PotStackZone             = params.Zones.pot_stack_zone
@@ -704,6 +707,7 @@ function exchangeChips(params)
 end
 
 function getChipsByMemo(memo)
+  -- TODO: Add overload to get chips by memo out of a provided array
   local chips = {}
   for object in getObjects() do
     if isChip(object) and object.memo == memo then
@@ -753,6 +757,19 @@ function getStackChipsInBettingZoneForPlayer(user_id)
 
   local chips = {}
   for object in PotZone.getObjects() do
+    if isChip(object) and object.memo == stack_chip_memo then
+      table.insert(chips, object)
+    end
+  end
+  return chips
+end
+
+function getStackChipsInExchangeZoneForPlayer(user_id)
+  local player = PlayerManager.call("getPlayerById", user_id)
+  local stack_chip_memo = generateChipData(player, "stack").memo
+
+  local chips = {}
+  for object in ChipExchangeZone.getObjects() do
     if isChip(object) and object.memo == stack_chip_memo then
       table.insert(chips, object)
     end
@@ -831,6 +848,40 @@ function moveBetsToPot(onFinish_params)
     function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
     _allMutexesReleased
   )
+end
+
+--[[
+  Deletes pending chips and spawns in receive chips.
+
+  chip_exchange_dto = {
+    user_id = string,
+    give    = table,
+    receive = table
+  }
+]]
+function exchangeChipsForPlayer(chip_exchange_dto)
+  local user_id = chip_exchange_dto.user_id
+  local player = PlayerManager.call("getPlayerById", user_id)
+
+  -- Pending chips at this point should just be those being exchanged
+  local pending_chip_memo = generateChipData(player, "pending").memo
+  for object in getObjects() do
+    if object.memo == pending_chip_memo then
+      object.destruct()
+    end
+  end
+
+  local stack_chip_data = generateChipData(player, "stack")
+  local receive_chips = chip_exchange_dto.receive
+  local spawnChips_params_list = generateSpawnChipsParameters({
+    name        = stack_chip_data.name,
+    memo        = stack_chip_data.memo,
+    origin_zone = ChipExchangeStackZone,
+    chips       = receive_chips
+  })
+  for spawnChips_params in spawnChips_params_list do
+    spawnChips(spawnChips_params)
+  end
 end
 
 --[[

@@ -1257,7 +1257,6 @@ end
 
 --[[
   String split
-
 ]]
 function split(inputstr, sep)
   if sep == nil then

@@ -489,9 +489,16 @@ function animateExchangeChips(params)
     return
   end
 
+  local onFinish_params = params.onFinish_params
+  
+  if player.user_type ~= "bot" then
+    -- Skip any human chip exchanges.
+    onFinish_params.service.call(onFinish_params.callback, onFinish_params.args)
+    return
+  end
+
   broadcastToAll(player.display_name.." is exchanging chips", player.color)
 
-  local onFinish_params = params.onFinish_params
   lockExternalScriptMutex()
   local exchangeChips_params = {
     owner             = player,
@@ -627,13 +634,69 @@ end -- Bot animations
   START TRACKING PLAYER TURN
   Conjuring a PlayerActionDTO from the board state is a different set of complicated
   than animating one.
+  They can also exchange chips during their turn.
 ]]
 
--- UI IDs
-local playerAction_window_id              = "panel_player-action-menu"
-local playerAction_minimumToStayIn_id     = "label_minimum-to-stay-in"
-local playerAction_currentBetAmount_id    = "label_current-bet-amount"
-local playerAction_confirmPlayerAction_id = "button_confirm-player-action"
+--- UI IDs
+
+-- Window
+local playerTurn_window_id                   = "panel_player-turn-menu"
+
+-- Menu bar
+local playerTurn_window_titleText_id         = "text_player-turn-menu"
+local playerTurn_window_minimizeButton_id    = "button_minimize-player-menu"
+
+-- Tabs
+local playerTurn_playerActionTab_id          = "tab_player-menu_player-action-page"
+local playerTurn_chipExchangeTab_id          = "tab_player-menu_exchange-chips-page"
+
+-- Pages
+local playerTurn_playerActionPage_id         = "page_player-action-page"
+local playerTurn_chipExchangePage_id         = "page_exchange-chips-page"
+
+-- Labels
+local playerAction_minimumToStayIn_id        = "label_minimum-to-stay-in"
+local playerAction_currentBetAmount_id       = "label_current-bet-amount"
+
+local playerTurn_chipExchangeSumLabel_id     = "label_chip-exchange_exchange-sum"
+local playerTurn_chipExchangeBalanceLabel_id = "label_chip-exchange_balance"
+local playerTurn_chipExchangeCountLabel_ids  = {
+  ["1000"] = "label_chip-exchange_1000",
+  ["500"]  = "label_chip-exchange_500",
+  ["100"]  = "label_chip-exchange_100",
+  ["50"]   = "label_chip-exchange_50",
+  ["10"]   = "label_chip-exchange_10"
+}
+
+-- Buttons
+local playerTurn_confirmPlayerAction_id      = "button_confirm-player-action"
+local playerTurn_confirmChipExchange_id      = "button_chip-exchange_submit"
+
+-- TODO: The different pages will need different window sizes.
+function _onPlayerMenuTabChanged(player, value, id)
+  local set_selected_tab_attributes = {
+    interactable = "False",
+    isOn = "True"
+  }
+  local set_unselected_tab_attributes = {
+    interactable = "True",
+    isOn = "False"
+  }
+
+  if id == playerTurn_playerActionTab_id and value == "True" then
+    Global.UI.setAttribute(playerTurn_window_id, "height", tostring(170))
+    Global.UI.setAttributes(playerTurn_playerActionTab_id, set_selected_tab_attributes)
+    Global.UI.setAttributes(playerTurn_chipExchangeTab_id, set_unselected_tab_attributes)
+    Global.UI.show(playerTurn_playerActionPage_id)
+    Global.UI.hide(playerTurn_chipExchangePage_id)
+  elseif id == playerTurn_chipExchangeTab_id and value == "True" then
+    Global.UI.setAttribute(playerTurn_window_id, "height", tostring(265))
+    Global.UI.setAttributes(playerTurn_chipExchangeTab_id, set_selected_tab_attributes)
+    Global.UI.setAttributes(playerTurn_playerActionTab_id, set_unselected_tab_attributes)
+    Global.UI.show(playerTurn_chipExchangePage_id)
+    Global.UI.hide(playerTurn_playerActionPage_id)
+  end
+end
 
 CARD_POSITION = {
   no_cards = "no_cards",
@@ -674,19 +737,19 @@ end
 
 -- This field specifically refers to the human player whose turn it is.
 -- nil if it is not a human's turn.
-local CURRENT_PLAYER               = nil
+local CURRENT_PLAYER                = nil
 -- Intents are limited based on the round.
-local CURRENT_ROUND                = nil
+local CURRENT_ROUND                 = nil
 -- Intents vary based on how many chips are put forward relative to the player's stack and the current bet
-local CURRENT_MINIMUM_CHIP_IN      = nil
-local CURRENT_PLAYER_STACK_AMOUNT  = nil
+local CURRENT_MINIMUM_CHIP_IN       = nil
+local CURRENT_PLAYER_STACK_AMOUNT   = nil
 
 -- Intent is derived from the location and orientation of the player's cards
-local CURRENT_PLAYER_CARD_POSITION = nil
+local CURRENT_PLAYER_CARD_POSITION  = nil
 -- Need a reference to the player's chips to mark them while the request is sent
-local CURRENT_CHIPS_BEING_BET      = nil
+local CURRENT_CHIPS_BEING_BET       = nil
 -- This field is just a courtesy to numerize the inferred bet
-local CURRENT_BET_VALUE            = nil
+local CURRENT_BET_VALUE             = nil
 
 -- The DTO is constantly rebuilt until it is sent so I can track if the player is
 -- in a valid state and relay what state is being submitted to them.
@@ -719,7 +782,7 @@ function _onPlayerActionButtonClicked(player, value, id)
   }
   ChipManager.call("markChipsAsPending", markChipsAsPending_params)
   
-  Global.UI.setAttribute(playerAction_confirmPlayerAction_id, "interactable", "False")
+  Global.UI.setAttribute(playerTurn_confirmPlayerAction_id, "interactable", "False")
 
   local postPlayerAction_params = {
     player_action_dto = PLAYER_ACTION_DTO,
@@ -810,6 +873,9 @@ function updateCurrentPlayerCardPosition()
   CURRENT_PLAYER_CARD_POSITION = CARD_POSITION.unknown
 end
 
+--[[
+  A DTO can be derived from the where the player's cards or chips are.
+]]
 function updatePlayerActionDto()
   if CURRENT_PLAYER == nil then return end
   local player_action_dto = { player_id = CURRENT_PLAYER.user_id }
@@ -847,14 +913,170 @@ function updatePlayerActionDto()
   PLAYER_ACTION_DTO = player_action_dto
 end
 
-function updatePlayerActionMenu()
+--[[
+  Update the UI to tell the player how much they are betting and what
+  their intent is (assumed to be).
+]]
+function _updatePlayerActionMenu()
   Global.UI.setAttribute(playerAction_currentBetAmount_id, "text", tostring(CURRENT_BET_VALUE or 0))
   local intent = PLAYER_ACTION_DTO and PLAYER_ACTION_DTO.intent
-  Global.UI.setAttribute(playerAction_confirmPlayerAction_id, "text", intent or "Waiting for player...")
+  Global.UI.setAttribute(playerTurn_confirmPlayerAction_id, "text", intent or "Waiting for player...")
   if intent ~= nil then
-    Global.UI.setAttribute(playerAction_confirmPlayerAction_id, "interactable", true)
+    Global.UI.setAttribute(playerTurn_confirmPlayerAction_id, "interactable", true)
   else
-    Global.UI.setAttribute(playerAction_confirmPlayerAction_id, "interactable", false)
+    Global.UI.setAttribute(playerTurn_confirmPlayerAction_id, "interactable", false)
+  end
+end
+
+
+-- A reference offset chips in the exchange zone for the CURRENT_PLAYER
+local CURRENT_CHIPS_BEING_EXCHANGED = nil
+local CURRENT_EXCHANGE_VALUE        = nil
+local CHIP_EXCHANGE_FIELDS          = {}
+local CHIP_EXCHANGE_RESULT          = nil
+
+function _resetExchangeFields()
+  CURRENT_CHIPS_BEING_EXCHANGED = {}
+  CURRENT_EXCHANGE_VALUE = 0
+
+  CHIP_EXCHANGE_FIELDS["1000"] = 0
+  CHIP_EXCHANGE_FIELDS["500"]  = 0
+  CHIP_EXCHANGE_FIELDS["100"]  = 0
+  CHIP_EXCHANGE_FIELDS["50"]   = 0
+  CHIP_EXCHANGE_FIELDS["10"]   = 0
+end
+
+function _onExchangeChipsButtonClicked(player, value, id)
+  if CURRENT_PLAYER == nil then return end
+
+  -- If the exchange is successful, all chips in the exchange zone will
+  -- be deleted and new chips are spawned.
+  local markChipsAsPending_params = {
+    user_id = CURRENT_PLAYER.user_id,
+    chips   = CURRENT_CHIPS_BEING_EXCHANGED
+  }
+  ChipManager.call("markChipsAsPending", markChipsAsPending_params)
+  
+  Global.UI.setAttribute(playerTurn_confirmChipExchange_id, "interactable", "False")
+
+  local chip_exchange_dto = {
+    user_id = CURRENT_PLAYER.user_id,
+    give    ={["10"] = 0, ["50"] = 0, ["100"] = 0, ["500"] = 0, ["1000"] = 0},
+    receive ={["10"] = 0, ["50"] = 0, ["100"] = 0, ["500"] = 0, ["1000"] = 0}
+  }
+  for chip in CURRENT_CHIPS_BEING_EXCHANGED do
+    local denomination = tostring(chip.getValue())
+    local count = math.abs(chip.getQuantity())
+    chip_exchange_dto.give[denomination] = chip_exchange_dto.give[denomination] + count
+  end
+  for denomination, count in pairs(CHIP_EXCHANGE_FIELDS) do
+    chip_exchange_dto.receive[denomination] = chip_exchange_dto.receive[denomination] + count
+  end
+
+  local postChipExchange_params = {
+    chip_exchange_dto = chip_exchange_dto,
+
+    onFinish_params = {
+      service  = self,
+      callback = "_onExchangeChipsResponseReceived"
+    }
+  }
+  _awaitChipExchangePosted()
+  ServerClientConnection.call("postChipExchange", postChipExchange_params)
+end
+
+function _onExchangeChipsResponseReceived(result)
+  CHIP_EXCHANGE_RESULT = { copy_of_args = result.copy_of_args }
+  if result.error then
+    CHIP_EXCHANGE_RESULT.error = {
+      response_code = result.error.response_code,
+      text = result.error.text
+    }
+  end
+end
+
+function _awaitChipExchangePosted()
+  Wait.condition(
+    function()
+      if CHIP_EXCHANGE_RESULT == nil then return end
+      if CHIP_EXCHANGE_RESULT.error then
+        local log_message = logString(CHIP_EXCHANGE_RESULT.error, "PlayerManager._awaitChipExchangePosted", "[ERROR]", false, true)
+        log("\n"..log_message)
+
+        local error = CHIP_EXCHANGE_RESULT.error
+        broadcastToColor(error.text, "Black", "Red")
+
+        local markPendingChips_params = { user_id = CURRENT_PLAYER}
+        ChipManager.call("markPendingChipsAsStack", markPendingChips_params)
+      else
+        -- Delete the give and spawn the receive
+        local chip_exchange_dto = CHIP_EXCHANGE_RESULT.copy_of_args.chip_exchange_dto
+        ChipManager.call("exchangeChipsForPlayer", chip_exchange_dto)
+      end
+
+      CHIP_EXCHANGE_RESULT = nil
+    end,
+    function() return CHIP_EXCHANGE_RESULT ~= nil end
+  )
+end
+
+function updateCurrentChipsBeingExchanged()
+  if CURRENT_PLAYER == nil then return end
+  CURRENT_CHIPS_BEING_EXCHANGED = {table.unpack(ChipManager.call("getStackChipsInExchangeZoneForPlayer", CURRENT_PLAYER.user_id))}
+  log(CURRENT_CHIPS_BEING_EXCHANGED)
+  CURRENT_EXCHANGE_VALUE = 0
+  for chip in CURRENT_CHIPS_BEING_EXCHANGED do
+    CURRENT_EXCHANGE_VALUE = CURRENT_EXCHANGE_VALUE + chip.getValue() * math.abs(chip.getQuantity())
+  end
+end
+
+--[[
+  All buttons for incrementing/decrementing the chips you want to get
+  use this callback.
+]]
+function _updateExchangeChipsFields(player, value, id)
+  -- ID format is usually `<component>_<owner>_<metadata>(_<etc>...)
+  local metadata = split(id, "_")
+
+  -- The only components hitting this callback should be the buttons for
+  -- manipulating the counters.
+  if metadata[1] ~= "button" then
+    local log_message = logString("Unknown input type ["..metadata[1].."]", "PlayerManager._updateExchangeChipsFields", "[ERROR]", false, true)
+    log(log_message)
+    return
+  end
+
+  local mod = (metadata[3] == "increment") and 1 or -1
+  local denomination = metadata[4]
+  CHIP_EXCHANGE_FIELDS[denomination] = (CHIP_EXCHANGE_FIELDS[denomination] or 0) + mod
+  if CHIP_EXCHANGE_FIELDS[denomination] < 0 then CHIP_EXCHANGE_FIELDS[denomination] = 0 end
+  _updateExchangeChipsMenu()
+end
+
+--[[
+  Updates the UI to reflect the fields for chip exchanges.
+  Handles setting the Exchange Chips button as interactable.
+]]
+function _updateExchangeChipsMenu()
+  local chip_exchange_sum = 0
+  for denomination, count in pairs(CHIP_EXCHANGE_FIELDS) do
+    chip_exchange_sum = chip_exchange_sum + (tonumber(denomination) * count)
+    local label_id = playerTurn_chipExchangeCountLabel_ids[denomination]
+    Global.UI.setAttribute(label_id, "text", tostring(count))
+  end
+  Global.UI.setAttribute(playerTurn_chipExchangeSumLabel_id, "text", tostring(chip_exchange_sum))
+
+  -- Updates the balance, enables the button if a valid exchange can be made.
+  local balance = chip_exchange_sum - (CURRENT_EXCHANGE_VALUE or 0)
+  Global.UI.setAttribute(playerTurn_chipExchangeBalanceLabel_id, "text", tostring(balance))
+  if balance ~= 0 then
+    Global.UI.setAttribute(playerTurn_chipExchangeBalanceLabel_id, "color", "red")
+    if chip_exchange_sum ~= 0 then
+      Global.UI.setAttribute(playerTurn_confirmChipExchange_id, "interactable", "False")
+    end
+  else
+    Global.UI.setAttribute(playerTurn_chipExchangeBalanceLabel_id, "color", "white")
+    Global.UI.setAttribute(playerTurn_confirmChipExchange_id, "interactable", "True")
   end
 end
 
@@ -870,6 +1092,9 @@ function _trackPlayerTurn(player, current_round, current_player_stack_amount, mi
   updateCurrentPlayerCardPosition()
   -- See if we can generate a valid dto from the current state
   updatePlayerActionDto()
+
+  -- Check if there's any chips in the exchange zone
+  updateCurrentChipsBeingExchanged()
 
   -- Event handlers cover chips entering/leaving the betting zone, as well
   -- as being picked up/dropped by the player.
@@ -888,17 +1113,22 @@ function _trackPlayerTurn(player, current_round, current_player_stack_amount, mi
   -- These two update the UI to relay the current inference to the player.
   local observeBetValue_params = {
     getValue = function() return CURRENT_BET_VALUE end,
-    onChange = updatePlayerActionMenu,
+    onChange = _updatePlayerActionMenu,
     continue_observing = true
   }
   local observePlayerActionDto_params = {
     getValue = function() return PLAYER_ACTION_DTO end,
-    onChange = updatePlayerActionMenu,
+    onChange = _updatePlayerActionMenu,
+    continue_observing = true
+  }
+  local observeExchangeValue_params = {
+    getValue = function() return CURRENT_EXCHANGE_VALUE end,
+    onChange = _updateExchangeChipsMenu,
     continue_observing = true
   }
   -- Contexts are stored in a collection. I either need all the observers or none of them,
   -- so shutdown is simple.
-  local observer_contexts = { observeBet_params, observeCards_params, observeBetValue_params, observePlayerActionDto_params }
+  local observer_contexts = { observeBet_params, observeCards_params, observeBetValue_params, observePlayerActionDto_params, observeExchangeValue_params }
   for context in observer_contexts do
     _startMutationObserver(context)
   end
@@ -906,9 +1136,9 @@ function _trackPlayerTurn(player, current_round, current_player_stack_amount, mi
   -- Setting up the UI
   local visible_to = "Black" --Debug. Menu should only be visible to the player making a decision.
   visible_to = visible_to.."|"..CURRENT_PLAYER.color
-  Global.UI.setAttribute(playerAction_window_id, "visibility", visible_to)
+  Global.UI.setAttribute(playerTurn_window_id, "visibility", visible_to)
   Global.UI.setAttribute(playerAction_minimumToStayIn_id, "text", CURRENT_MINIMUM_CHIP_IN)
-  updatePlayerActionMenu()
+  _updatePlayerActionMenu()
 
   _awaitValidActionPosted(observer_contexts)
 end
@@ -920,7 +1150,7 @@ function _awaitValidActionPosted(observer_contexts)
       -- My linter is stupid, this just makes some squigglies go away.
       if PLAYER_ACTION_RESULT and PLAYER_ACTION_RESULT.error then
         local log_message = logString(PLAYER_ACTION_RESULT.error, "PlayerManager._awaitValidActionPosted", "[ERROR]", false, true)
-        log(log_message)
+        log("\n"..log_message)
 
         local error = PLAYER_ACTION_RESULT.error
 
@@ -953,6 +1183,7 @@ function _awaitValidActionPosted(observer_contexts)
       CURRENT_PLAYER.state = intent
 
       _resetTrackedFields()
+      _resetExchangeFields()
       unlockPlayerTurnMutex()
     end,
     function() return PLAYER_ACTION_RESULT ~= nil end
@@ -961,42 +1192,35 @@ end
 
 do -- TTS Event listeners
 
+  function _respondToCardsAndChips(zone, object)
+    if CURRENT_PLAYER == nil then return end
+    if object.type == "Chip" then
+      if zone == PotZone then updateCurrentChipsBeingBet()
+      elseif zone == ChipExchangeZone then 
+        updateCurrentChipsBeingExchanged()
+      end
+    elseif object.type == "Card" then
+      if zone == CURRENT_PLAYER.zones.hand_zone then updateCurrentPlayerCardPosition() end
+    end
+  end
+
   -- Track if cards enter hand or chips enter betting zone
   function onObjectEnterZone(zone, object)
-    if CURRENT_PLAYER == nil then return end
-    if zone == PotZone then
-      if object.type == "Chip" then updateCurrentChipsBeingBet() end
-      return
-    end
-    if zone == CURRENT_PLAYER.zones.hand_zone then
-      if object.type == "Card" then updateCurrentPlayerCardPosition() end
-      return
-    end
+    _respondToCardsAndChips(zone, object)
   end
 
   -- Track if cards leave hand or chips leave betting zone
   function onObjectLeaveZone(zone, object)
-    if CURRENT_PLAYER == nil then return end
-    if zone == PotZone then
-      if object.type == "Chip" then
-        log("Card entered "..CURRENT_PLAYER.color.." hand zone")
-        updateCurrentChipsBeingBet()
-      end
-      return
-    end
-    if zone == CURRENT_PLAYER.zones.hand_zone then
-      if object.type == "Card" then
-        log("Card left "..CURRENT_PLAYER.color.." hand zone")
-        updateCurrentPlayerCardPosition()
-      end
-      return
-    end
+    _respondToCardsAndChips(zone, object)
   end
 
   -- Track if the player drops a card or chip(s)
   function onObjectDrop(_, object)
     if CURRENT_PLAYER == nil then return end
-    if object.type == "Chip" then updateCurrentChipsBeingBet() end
+    if object.type == "Chip" then
+      updateCurrentChipsBeingBet()
+      updateCurrentChipsBeingExchanged()
+    end
     if object.type == "Card" then updateCurrentPlayerCardPosition() end
   end
 
@@ -1004,11 +1228,15 @@ do -- TTS Event listeners
   function onObjectRotate(object, spin, flip, player_color, old_spin, old_flip)
     if CURRENT_PLAYER == nil then return end
     if object.type == "Card" then
-      updateCurrentPlayerCardPosition()
+      Wait.time(
+        updateCurrentPlayerCardPosition,
+        0.2
+      )
     end
   end
 
 end -- TTS Event listeners
+
 --[[
   END   TRACKING PLAYER TURN
 ]]
@@ -1045,4 +1273,28 @@ function onObjectDestroy(object)
       updatePlayerStackAndBet(player)
     end
   end
+end
+
+--[[
+  String split
+]]
+function split(inputstr, sep)
+  if sep == nil then
+      sep = "%s" -- Default to whitespace if no separator provided
+  end
+  local t = {}
+  -- Escape magic characters in the separator
+  local safe_sep = sep:gsub("[%([%\\%.%+%-%*%?%^%$])]", "%%%1")
+  local pattern = string.format("([^%s]+)", safe_sep)
+  
+  -- An elegant trick using gmatch to parse by separator positions
+  local from = 1
+  local delim_from, delim_to = string.find(inputstr, sep, from, true)
+  while delim_from do
+      table.insert(t, string.sub(inputstr, from, delim_from - 1))
+      from = delim_to + 1
+      delim_from, delim_to = string.find(inputstr, sep, from, true)
+  end
+  table.insert(t, string.sub(inputstr, from))
+  return t
 end

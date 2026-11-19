@@ -78,6 +78,8 @@ DECK_ORDER_ENDPOINT = nil
 
 DEFAULT_PLAYER_ACTION_ENDPOINT = "https://game.bahms.org/api/poker/game/{game_id}/action"
 PLAYER_ACTION_ENDPOINT = nil
+DEFAULT_CHIP_EXCHANGE_ENDPOINT = "https://game.bahms.org/api/poker/game/{game_id}/chip/exchange"
+CHIP_EXCHANGE_ENDPOINT = nil
 
 end -- Connection configuration
 
@@ -107,6 +109,7 @@ function _setup(params)
   DECK_ORDER_ENDPOINT    = string.gsub(DEFAULT_DECK_ORDER_ENDPOINT, "{game_id}", params.game_id)
   START_HAND_ENDPOINT    = string.gsub(DEFAULT_START_HAND_ENDPOINT, "{game_id}", params.game_id)
   PLAYER_ACTION_ENDPOINT = string.gsub(DEFAULT_PLAYER_ACTION_ENDPOINT, "{game_id}", params.game_id)
+  CHIP_EXCHANGE_ENDPOINT = string.gsub(DEFAULT_CHIP_EXCHANGE_ENDPOINT, "{game_id}", params.game_id)
   
   GAME_ID                = params.game_id
   GameStateHandler.setVar("GAME_ID", GAME_ID)
@@ -693,11 +696,14 @@ end
   Posts a player action.
 
   params = {
-    ...  
-    auth_token = string,
     player_action_dto = {
-
-    }
+      player_id = string,
+      intent    = string,
+      chips     = {
+        string = int
+        ...
+      }
+    },
 
     onFinish_params = {
       service  = <Scripting Object>,
@@ -733,7 +739,6 @@ function postPlayerAction(params)
       }
 
       local response_code = instance.response_code
-      local body = JSON.decode(instance.text)
       if response_code == 200 then
         -- Player DTO successfully posted
         onFinish_params.service.call(onFinish_params.callback, result)
@@ -741,13 +746,68 @@ function postPlayerAction(params)
       end
 
       local error = {response_code = instance.response_code, text = instance.text}
-      local log_message = logString(error, "ServerClientConnection.joinPlayerToGame\nUnhandled response type.", "[ERROR]", false, true)
+      local log_message = logString(error, "ServerClientConnection.postPlayerAction\nUnhandled response type.", "[ERROR]", false, true)
       log(log_message)
 
       local result = {
         error        = error,
         copy_of_args = params
       }
+
+      onFinish_params.service.call(onFinish_params.callback, result)
+    end
+  )
+end
+
+--[[
+  Post a chip exchange.
+
+  params = {
+    user_id = string,
+    give    = { string=int, ... },
+    receive = { string=int, ... },
+
+    onFinish_params = {
+      service  = <Scripting Object>,
+      callback = string
+    }
+  }
+]]
+function postChipExchange(params)
+  local chip_exchange_dto = params.chip_exchange_dto
+  local onFinish_params   = params.onFinish_params
+
+  local user_id = chip_exchange_dto.user_id
+  local user_profile = UserRepository.call("getUserById", user_id)
+  local auth_token = user_profile.auth_token
+
+  local payload = JSON.encode(chip_exchange_dto)
+
+  local log_message = logString(chip_exchange_dto, "ServerClientConnection.postChipExchange", "[INFO]", false, true)
+  log(log_message)
+
+  WebRequest.custom(
+    CHIP_EXCHANGE_ENDPOINT,
+    "POST",
+    true,
+    payload,
+    {["Authorization"] = "Bearer "..auth_token},
+    function(instance)
+      local result = {
+        copy_of_args = params,
+      }
+
+      local response_code = instance.response_code
+      if response_code == 200 then
+        onFinish_params.service.call(onFinish_params.callback, result)
+        return
+      end
+
+      local error = {response_code = instance.response_code, text = instance.text}
+      local log_message = logString(error, "ServerClientConnection.postChipExchange\nUnhandled response type.", "[ERROR]", false, true)
+      log(log_message)
+
+      result.error = error
 
       onFinish_params.service.call(onFinish_params.callback, result)
     end
