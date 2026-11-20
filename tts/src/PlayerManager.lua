@@ -672,8 +672,7 @@ local playerTurn_chipExchangeCountLabel_ids  = {
 local playerTurn_confirmPlayerAction_id      = "button_confirm-player-action"
 local playerTurn_confirmChipExchange_id      = "button_chip-exchange_submit"
 
--- TODO: The different pages will need different window sizes.
-function _onPlayerMenuTabChanged(player, value, id)
+function _setPageTab(tab_id)
   local set_selected_tab_attributes = {
     interactable = "False",
     isOn = "True"
@@ -683,19 +682,23 @@ function _onPlayerMenuTabChanged(player, value, id)
     isOn = "False"
   }
 
-  if id == playerTurn_playerActionTab_id and value == "True" then
+  if tab_id == playerTurn_playerActionTab_id then
     Global.UI.setAttribute(playerTurn_window_id, "height", tostring(170))
     Global.UI.setAttributes(playerTurn_playerActionTab_id, set_selected_tab_attributes)
     Global.UI.setAttributes(playerTurn_chipExchangeTab_id, set_unselected_tab_attributes)
     Global.UI.show(playerTurn_playerActionPage_id)
     Global.UI.hide(playerTurn_chipExchangePage_id)
-  elseif id == playerTurn_chipExchangeTab_id and value == "True" then
+  elseif tab_id == playerTurn_chipExchangeTab_id then
     Global.UI.setAttribute(playerTurn_window_id, "height", tostring(265))
     Global.UI.setAttributes(playerTurn_chipExchangeTab_id, set_selected_tab_attributes)
     Global.UI.setAttributes(playerTurn_playerActionTab_id, set_unselected_tab_attributes)
     Global.UI.show(playerTurn_chipExchangePage_id)
     Global.UI.hide(playerTurn_playerActionPage_id)
   end
+end
+
+function _onPlayerMenuTabChanged(player, value, id)
+  if value == "True" then _setPageTab(id) end
 end
 
 CARD_POSITION = {
@@ -946,6 +949,7 @@ function _resetExchangeFields()
   CHIP_EXCHANGE_FIELDS["100"]  = 0
   CHIP_EXCHANGE_FIELDS["50"]   = 0
   CHIP_EXCHANGE_FIELDS["10"]   = 0
+  _updateExchangeChipsMenu()
 end
 
 function _onExchangeChipsButtonClicked(player, value, id)
@@ -1014,6 +1018,7 @@ function _awaitChipExchangePosted()
         -- Delete the give and spawn the receive
         local chip_exchange_dto = CHIP_EXCHANGE_RESULT.copy_of_args.chip_exchange_dto
         ChipManager.call("exchangeChipsForPlayer", chip_exchange_dto)
+        _resetExchangeFields()
       end
 
       CHIP_EXCHANGE_RESULT = nil
@@ -1025,7 +1030,6 @@ end
 function updateCurrentChipsBeingExchanged()
   if CURRENT_PLAYER == nil then return end
   CURRENT_CHIPS_BEING_EXCHANGED = {table.unpack(ChipManager.call("getStackChipsInExchangeZoneForPlayer", CURRENT_PLAYER.user_id))}
-  log(CURRENT_CHIPS_BEING_EXCHANGED)
   CURRENT_EXCHANGE_VALUE = 0
   for chip in CURRENT_CHIPS_BEING_EXCHANGED do
     CURRENT_EXCHANGE_VALUE = CURRENT_EXCHANGE_VALUE + chip.getValue() * math.abs(chip.getQuantity())
@@ -1087,6 +1091,7 @@ function _trackPlayerTurn(player, current_round, current_player_stack_amount, mi
   CURRENT_ROUND = current_round
   CURRENT_PLAYER_STACK_AMOUNT = current_player_stack_amount
   CURRENT_MINIMUM_CHIP_IN = minimum_chip_in
+  _resetExchangeFields()
 
   -- Initial check for what chips are in the betting zone
   updateCurrentChipsBeingBet()
@@ -1141,6 +1146,7 @@ function _trackPlayerTurn(player, current_round, current_player_stack_amount, mi
   Global.UI.setAttribute(playerTurn_window_id, "visibility", visible_to)
   Global.UI.setAttribute(playerAction_minimumToStayIn_id, "text", CURRENT_MINIMUM_CHIP_IN)
   _updatePlayerActionMenu()
+  _setPageTab(playerTurn_playerActionTab_id)
 
   _awaitValidActionPosted(observer_contexts)
 end
