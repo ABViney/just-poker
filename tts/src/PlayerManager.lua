@@ -890,14 +890,16 @@ function updatePlayerActionDto()
     player_action_dto.chips[denomination] = player_action_dto.chips[denomination] + count
   end
 
-  if CURRENT_BET_VALUE == CURRENT_PLAYER_STACK_AMOUNT then
-    player_action_dto.intent = "all_in"
-  elseif CURRENT_ROUND == "setup" then
+  if CURRENT_ROUND == "setup" then
     -- `all_in` is transformed to `ante` by the server if necessary
     if CURRENT_BET_VALUE == CURRENT_MINIMUM_CHIP_IN then
       -- Can only put forward up to the blind cost for the ante
       player_action_dto.intent = "ante"
+    elseif CURRENT_BET_VALUE < CURRENT_MINIMUM_CHIP_IN and CURRENT_BET_VALUE == CURRENT_PLAYER_STACK_AMOUNT then
+      player_action_dto.intent = "all_in"
     end
+  elseif CURRENT_BET_VALUE == CURRENT_PLAYER_STACK_AMOUNT then
+    player_action_dto.intent = "all_in"
   elseif CURRENT_PLAYER_CARD_POSITION == CARD_POSITION.folded then
     player_action_dto.intent = "fold"
     player_action_dto.chips = nil -- Don't bet chips if the player is folding.
