@@ -124,7 +124,7 @@ function startPlayerTurn(params)
     _trackPlayerTurn(
       player,
       params.data.current_round,
-      params.data.current_player_stack_amount,
+      params.data.current_stack_amount,
       params.data.minimum_chip_in
     )
     

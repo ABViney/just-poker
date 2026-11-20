@@ -174,7 +174,6 @@ function onGameStateReceived(params)
       
       local current_aggressor_bet_sum = _getCurrentMaxBet(table.players)
       local current_player_bet_sum = _getValueOfChips(current_player.current_bet)
-      log("FIGURING OUT HOW MUCH GOTTA CHIP IN BABY\nCurrent Agressor="..current_aggressor_bet_sum.."\nCurrent Player="..current_player_bet_sum)
       
       minimum_chip_in = current_aggressor_bet_sum - current_player_bet_sum
     end
