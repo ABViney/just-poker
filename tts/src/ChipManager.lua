@@ -245,9 +245,9 @@ function initializePot(pot)
     rotation = {0, 180, 0},
   }
   for denomination, count in pairs(pot or {}) do
-    chip_data.type = "Chip_"..denomination
+    spawnChips_params.type = "Chip_"..denomination
     -- chip_data.position = Zones.pot_stack_zone.positionToWorld(ChipDenominationRelativePosition[denomination])
-    chip_data.count = count
+    spawnChips_params.count = count
     local chip_stack = spawnChips(spawnChips_params)
     if chip_stack ~= nil then
       chip_stack.setPosition(Zones.pot_stack_zone.positionToWorld(CHIP_DENOMINATION_RELATIVE_POSITION[denomination]))

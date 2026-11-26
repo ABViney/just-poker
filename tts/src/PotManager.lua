@@ -55,10 +55,6 @@ function isAssociativeMutexUnlocked(index) return not associative_mutex[index] e
 
 end
 
-function setPotFromState(table)
-  ChipManager.call("initializePot", table.pot)
-end
-
 --[[
   payoutChips_params = {
     player_id = string,

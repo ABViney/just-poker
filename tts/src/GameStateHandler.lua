@@ -1,5 +1,6 @@
 
 local BlindManager
+local ChipManager
 local DeckManager
 local EventBus
 local Logger
@@ -17,6 +18,7 @@ TABLE_IS_SET = false
 ]]
 function init(params)
     BlindManager    = params.Services.BlindManager
+    ChipManager     = params.Services.ChipManager
     DeckManager     = params.Services.DeckManager
     EventBus        = params.Services.EventBus
     Logger          = params.Services.ExternalLogConnection
@@ -185,6 +187,8 @@ function setupTable(params)
   -- Lock the mutex
   onStart_params.service.call(onStart_params.callback, onStart_params.args)
 
+  table.pot = _fixPot(table.pot, table.players)
+
   -- -- TODO: The game state should provide the deck layout if a game is in progress.
   -- -- TODO: The cards in play should be dealt from the deck same as in normal game playback
 
@@ -213,9 +217,9 @@ function setupTable(params)
       log_message = "Dealing cards to the correct round."
     },
     {
-      service     = PotManager,
-      callback    = "setPotFromState",
-      args        = table,
+      service     = ChipManager,
+      callback    = "initializePot",
+      args        = table.pot,
       log_message = "Initializing the pot."
     },
     -- Terminating service call
@@ -349,4 +353,24 @@ function _getCurrentMaxBet(players)
     if player_current_bet > max_bet then max_bet = player_current_bet end
   end
   return max_bet
+end
+
+--[[
+  The pot in the gamestate also includes the current bets of players.
+  Dunno if this is intentional, but i get too many chips on the board
+  if I don't account for this.
+]]
+function _fixPot(pot, players)
+  local fixed_pot = {}
+  -- Cloning table, ignore.
+  for denomination, count in pairs(pot) do fixed_pot[denomination] = count end
+
+  for player in players do
+    local current_bet = player.current_bet
+    for denomination, count in pairs(current_bet) do
+      fixed_pot[denomination] = fixed_pot[denomination] - count
+    end
+  end
+
+  return fixed_pot
 end
