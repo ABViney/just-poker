@@ -56,6 +56,18 @@ function isChip(object)
   return string.find(object.type, "Chip") and object.memo
 end
 
+function deleteAllChips(onFinish_params)
+
+  for object in getObjects() do
+    if isChip(object) then object.destruct() end
+  end
+
+  Wait.frames(
+    function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
+    1
+  )
+end
+
 --[[
   Generates a table for the name and memo to be assigned to chips based on who owns
   them and where they will be.
