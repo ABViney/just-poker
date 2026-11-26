@@ -23,8 +23,8 @@ Todo:
 - [x] Add UI for dealer to start hand
 
 
-- [ ] Refactor onSave/onLoad to support continuing an already in-progress game
-- [ ] Add button to reset board to current gamestate
+- [x] Refactor onSave/onLoad to support continuing an already in-progress game
+- [-] Add button to reset board to current gamestate (can use the rewind button for now)
   - [ ] Automate resetting the board if a divergence in state is found
 - [ ] Fix players revealing their hand outside of a showdown
 - [ ] Add a button for the dealer to press that triggers payout after the winning hand(s) is decided
