@@ -186,6 +186,16 @@ function init(params)
   PlayerManager  = params.Services.PlayerManager
 
   Deck           = params.Objects.initial_deck
+  -- On a save load the GUID for the deck changed.
+  -- I don't know why this happened.
+  if Deck == nil then
+    for object in getObjects() do
+      if object.type == "Deck" then
+        Deck = object
+        break
+      end
+    end
+  end
   DeckZone       = params.Zones.dealer_deck_zone
   DeckSpreadZone = params.Zones.dealer_deck_spread_zone
   log("DeckManager initialized")
