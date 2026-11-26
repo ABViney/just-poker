@@ -1,6 +1,17 @@
 USERS = {}
 
 function init(params)
+  if params.Data.UserRepository then
+    local data = JSON.decode(params.Data.UserRepository)
+    for user_id, user in pairs(data) do
+      USERS[user_id] = {
+        user_id      = user.user_id,
+        display_name = user.display_name,
+        user_type    = user.user_type,
+        auth_token   = user.auth_token
+      }
+    end
+  end
   log("UserRepository initialized")
 end
 
@@ -37,4 +48,8 @@ end
 
 function clear()
   USERS = {}
+end
+
+function serialize()
+  return JSON.encode(USERS)
 end
