@@ -264,7 +264,17 @@ function setPlayers(players)
 
   -- Upload players in the game to the global variable
   for _, player in ipairs(players) do
-    PLAYERS[#PLAYERS+1] = player
+    PLAYERS[#PLAYERS+1] = {
+      user_id          = player.user_id,
+      display_name     = player.display_name,
+      user_type        = player.user_type,
+      position         = player.position,
+      hole             = {}, -- I want this empty
+      stack            = player.stack,
+      current_bet      = player.current_bet,
+      pot_contribution = player.pot_contribution,
+      state            = player.state
+    }
   end
   -- Order players by their position so we can iterate through them naturally
   table.sort(PLAYERS, function(a, b) return a.position < b.position end)
@@ -275,22 +285,11 @@ function setPlayers(players)
   for player in PLAYERS do
     player.color = SEATS[player.position + starting_seat]
     player.zones = PlayerZones[player.color]
-    starting_seat = starting_seat
 
   -- Give player chips and put their bets (if any) forward
     local player_chips = ChipManager.call("initializeChipsForPlayer", player)
     player.stack = player_chips.stack
     player.bet = player_chips.current_bet
-  end
-
-  -- Seat present players to their assigned position
-  -- This gets players that are present IN the game
-  local tts_player_instances = Player.getPlayers() --TTS's PlayerManager instance
-  for instance in tts_player_instances do
-    local player = getPlayerById(instance.steam_id)
-    if player then
-      instance.changeColor(player.color)
-    end
   end
 
   return true
