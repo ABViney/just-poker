@@ -401,47 +401,6 @@ function dealCards(deal_data)
 end
 
 --[[
-    All fields are optional. Sets the street and discard pile.
-    street_data: {
-        discard: [{rank: int, suite: int}], ...}]   // (Max 3)
-        street: [{rank: int, suite: int}, ...] // (Max 5)
-    }
---]]
-function setStreet(table)
-
-  local street_data = table.street
-
-  if street_data.discard then
-    local deal_data = {
-      cards = {},
-      position = DiscardPosition,
-      is_face_up = false
-    }
-    for card_data in street_data.discard do
-      deal_data.cards[#deal_data.cards+1] = string.char(card_data.rank) .. string.char(card_data.suite)
-    end
-    dealCards(deal_data)
-  end
-
-  if street_data.street then
-    local street_index = 1
-    for card_data in street_data.street do
-      if (street_index > #StreetPositions) then
-        log("Error: More cards in the street than can exist.")
-        log(street_data.street)
-        break
-      end
-      dealCards({
-        cards = {card_data},
-        position = StreetPositions[street_index],
-        is_face_up = true
-      })
-      street_index = street_index + 1
-    end
-  end
-end
-
---[[
   Deals two cards to each player still in the game, starting from the first player to the
   left of the DealerButton that is not "out".
 
