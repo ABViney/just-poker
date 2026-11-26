@@ -177,6 +177,11 @@ function isExternalScriptMutexUnlocked(args)
   return not card_in_transit
 end
 
+local associative_mutex = {}
+function lockAssociativeMutex(index) associative_mutex[index] = true end
+function unlockAssociativeMutex(index) associative_mutex[index] = false end
+function isAssociativeMutexUnlocked(index) return not associative_mutex[index] end
+
 function onLoad()
 end
 
@@ -597,6 +602,79 @@ function gatherCards(onFinish_params)
     end,
     0.5 -- About how long it takes for a card that's flipped to become obscured
   )
+end
+
+--[[
+  When continuing a game I didn't have a method to deal hands/the street. This is a hack patch
+  to get cards on the table. Time isn't super sensitive, since bot turns should be done by now.
+]]
+function dealToRound(current_round_type)
+
+
+  local ROUND_CASCADE_ENUM = {
+    ["setup"]     = 0,   -- Don't do anything for this
+    ["pre_flop"]  = 1,   -- Deal hand
+    ["flop"]      = 2,   -- Reveal flop
+    ["turn"]      = 3,   -- Reveal turn
+    ["river"]     = 4,   -- Reveal River
+    ["completed"] = 0    -- Don't do anything. I don't wanna try and deal with this. Requires knowledge of preceeding rounds which I can't simply gather from the state.
+  }
+
+  local ROUND_INDEX = ROUND_CASCADE_ENUM[current_round_type]
+
+  -- -- Early return. During `Setup` no cards are dealt.
+  if ROUND_CASCADE_ENUM[current_round_type] == 0 then return end
+
+  -- Each action takes a indeterminate amount of time to complete, but the implementing methods facilitate
+  -- a callback after finishing which I can use to release a mutex that signals to the next reveal to begin.
+  local PREFLOP_MUTEX   = "MUTEX dealing cards to players"
+  local FLOP_MUTEX      = "MUTEX revealing the flop"
+  local TURN_MUTEX      = "MUTEX revealing the turn"
+  local RIVER_MUTEX     = "MUTEX revealing the river"
+
+  -- All actions up to the `ROUND_INDEX` will be 
+  local ROUND_CASCADE_TUPLES = {
+    {func = dealHand,            mutex = PREFLOP_MUTEX  }, -- 1 | Preflop
+    {func = dealFlop,            mutex = FLOP_MUTEX     }, -- 2 | Flop
+    {func = dealTurn,            mutex = TURN_MUTEX     }, -- 3 | Turn
+    {func = dealRiver,           mutex = RIVER_MUTEX    }, -- 4 | River
+  }
+
+  local processing_round_index = 1
+  for i=1, ROUND_INDEX+1 do -- NOTE: This extra iter doesn't make sense rn. See the `else` branch below.
+    local current_round_index = i
+    Wait.condition(
+      function()
+        if current_round_index <= ROUND_INDEX then
+          -- If we are still processing round indices then there are 
+          local func  = ROUND_CASCADE_TUPLES[current_round_index].func
+          local mutex = ROUND_CASCADE_TUPLES[current_round_index].mutex
+
+          lockAssociativeMutex(mutex)
+          -- When the `func` finishes, we can process the next
+          -- (the one occuring in the next iter of the for loop)
+          Wait.condition(
+            function() processing_round_index = processing_round_index + 1 end,
+            function() return isAssociativeMutexUnlocked(mutex) end
+          )
+
+          -- 
+          local onFinish_params = {
+            service  = self,
+            callback = "unlockAssociativeMutex",
+            args     = mutex
+          }
+          func(onFinish_params)
+        else
+          -- Otherwise we're done, and need to inform the caller such.
+          -- NOTE: I lied. If I refactor how GameStateHandler instantiates the board then
+          --       add the callback here.
+          
+        end
+      end,
+      function() return processing_round_index == current_round_index end
+    )
+  end
 end
 
 --[[
