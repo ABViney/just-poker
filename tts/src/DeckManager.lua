@@ -418,7 +418,7 @@ function dealHand(onFinish_params)
   function noCardInTransit() return not card_in_transit end
 
   local deal_starts_from = PlayerManager.call("getPlayerByPosition", BlindManager.getVar("DealerButtonPosition"))
-  log("Deal starts from: " .. deal_starts_from.display_name)
+  log("\nDeal starts from: " .. deal_starts_from.display_name.."\n")
   local current_player_being_dealt = PlayerManager.call("getNextValidPlayer", deal_starts_from)
 
   function dealCardToPlayer()
@@ -428,11 +428,11 @@ function dealHand(onFinish_params)
         onFinish_params contains information for a function to call when this
         function's operations complete, which i'm using to disable a mutex set
         in TurnManager
-      --]] 
+      --]]
       
       Wait.condition(
         function()
-          onFinish_params.service.call(onFinish_params.callback)
+          onFinish_params.service.call(onFinish_params.callback, onFinish_params.args)
         end,
         noCardInTransit
       )
@@ -571,23 +571,31 @@ end
 function gatherCards(onFinish_params)
   Global.call("enableCardStacking")
   local cards_on_table = {}
-  -- Hopin that the group method will group to the first index in the collection provided
+  
   if Deck then table.insert(cards_on_table, Deck) end
+
   for object in getObjects() do
     if object.type == "Card" or object.type == "Deck" then
       table.insert(cards_on_table, object)
+      if not object.is_face_down then
+        object.flip()
+      end
     end
   end
-  
-  PlayerManager.call("removeCardsFromPlayerHoles")
-
-  local collection = group(cards_on_table)
-  collection[1].setPositionSmooth(DeckZone.getPosition(), false, false)
-  collection[1].setRotationSmooth(DeckZone.getRotation(), false, false)
 
   Wait.time(
-    function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
-    GATHER_CARDS_DELAY
+    function()
+      PlayerManager.call("removeCardsFromPlayerHoles")
+      local collection = group(cards_on_table)
+      collection[1].setPositionSmooth(DeckZone.getPosition(), false, false)
+      collection[1].setRotationSmooth(DeckZone.getRotation(), false, false)
+
+      Wait.time(
+        function() onFinish_params.service.call(onFinish_params.callback, onFinish_params.args) end,
+        GATHER_CARDS_DELAY
+      )
+    end,
+    0.5 -- About how long it takes for a card that's flipped to become obscured
   )
 end
 
