@@ -23,6 +23,7 @@ Todo:
 - [x] Add UI for dealer to start hand
 
 
+
 - [x] Refactor onSave/onLoad to support continuing an already in-progress game
 - [-] Add button to reset board to current gamestate (can use the rewind button for now)
   - [ ] Automate resetting the board if a divergence in state is found
@@ -32,3 +33,4 @@ Todo:
 - [ ] Check that event IDs from the server are consecutive
 - [ ] Improve trace logging. Refactor to utilize the external logging server
 - [ ] Improve broadcast notification/player turn indicator.
+- [ ] Exchange (sometimes?) work after reconnecting

@@ -612,6 +612,7 @@ function dealToRound(current_round_type)
 
 
   local ROUND_CASCADE_ENUM = {
+    ["unset"]     = 0,
     ["setup"]     = 0,   -- Don't do anything for this
     ["pre_flop"]  = 1,   -- Deal hand
     ["flop"]      = 2,   -- Reveal flop

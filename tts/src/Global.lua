@@ -12,6 +12,7 @@ local DECK_ORDER = nil
 local Objects
 local Services
 local Zones
+local Data
 
 local associative_mutex = {}
 function lockAssociativeMutex(index) associative_mutex[index] = true end
@@ -159,160 +160,170 @@ function onLoad(serialized_save_data)
 
   end
 
-  if GAME_ID then
-    log("\n\n\n=============\nGame ID set: "..GAME_ID.."\n============")
-    -- Don't need the Game Config UI
-    _hideGameConfigUI()
-
-    local ChipManager            = Services.ChipManager
-    local DeckManager            = Services.DeckManager
-    local ServerClientConnection = Services.ServerClientConnection
-
-
-    -- Hacky because _setup is only meant to be called when creating a listener.
-    -- The "GET deck" impl was only meant to be called after a listener has been created.
-    ServerClientConnection.call("_setup", {
-      auth_token = GAME_MASTER_AUTH_TOKEN,
-      game_id    = GAME_ID
-    })
-
-    local DELETE_CHIPS_MUTEX    = "deleting chips"
-    local GATHER_DECK_MUTEX     = "gathering deck"
-    local SORT_DECK_MUTEX       = "sorting deck"
-    local CREATE_LISTENER_MUTEX = "creating listener"
-
-    local setup_from_state_parameters = {
-      {
-        -- Delete chips
-        func        = function()
-          local onFinish_params = {
-            service  = self,
-            callback = "unlockAssociativeMutex",
-            args     = DELETE_CHIPS_MUTEX
-          }
-          ChipManager.call("deleteAllChips", onFinish_params)
-        end,
-        mutex       = DELETE_CHIPS_MUTEX,
-        log_message = "Deleting old chips"
-      },
-      {
-        -- Return cards to deck
-        func        = function()
-          local onFinish_params = {
-            service  = self,
-            callback = "unlockAssociativeMutex",
-            args     = GATHER_DECK_MUTEX
-          }
-          local DeckManager = Services.DeckManager
-          DeckManager.call("gatherCards", onFinish_params)
-        end,
-        mutex       = GATHER_DECK_MUTEX,
-        log_message = "return stray cards to deck"
-      },
-      {
-        -- Get deck order and sort deck if necessary
-        func        = function()
-          -- Two steps to sort the deck:
-          --  1. Get the deck order from the server
-          --  2. If the deck order is available, sort the deck
-
-
-          -- I'll capture the response in a local variable
-          local getDeckOrder_params = {
-            service  = self,
-            callback = "onDeckOrderResponseReceived"
-          }
-          ServerClientConnection.call("getDeckOrder", getDeckOrder_params)
-
-          -- Once that variable is set, we can evaluate if the deck should be sorted.
-          -- If the deck is null (False) then the first hand hasn't started and there is no deck order.
-          Wait.condition(
-            function()
-              local onFinish_params = {
-                service  = self,
-                callback = "unlockAssociativeMutex",
-                args     = SORT_DECK_MUTEX
-              }
-              if DECK_ORDER then
-                -- Ranks and Suits are char values. Have to normalize them to strings.
-                local normalized_deck_order = {}
-                for card in DECK_ORDER do
-                  table.insert(normalized_deck_order, string.char(card.rank, card.suit))
-                end
-                -- The deck will be sorted and, when it's done, the mutex will unlock
-                DeckManager.call("setDeckOrder", {
-                  deck_order      = normalized_deck_order,
-                  onFinish_params = onFinish_params
-                })
-              else
-                -- There's no sorting to do. Proceed
-                unlockAssociativeMutex(SORT_DECK_MUTEX)
-              end
-            end,
-            function() return DECK_ORDER ~= nil end
-          )
-
-        end,
-        mutex       = SORT_DECK_MUTEX,
-        log_message = "Sorting deck"
-      },
-      {
-        -- The table should be in a base-enough state now to create the listener.
-        -- The first event from creating the listener is a game_status_changed
-        func        = function()
-          local ServerClientConnection = Services.ServerClientConnection
-          ServerClientConnection.call("createEventListener", {
-            game_id    = GAME_ID,
-            auth_token = GAME_MASTER_AUTH_TOKEN
-          })
-        end,
-        mutex       = CREATE_LISTENER_MUTEX,
-        log_message = "creating event listener"
-      }
-    }
-
-    Wait.frames(
+  Wait.frames(
     function()
-      local index = 1
-        for i=1, #setup_from_state_parameters do
-          local setup_index = i
-
-          Wait.condition(
-            function()
-              local func        = setup_from_state_parameters[index].func
-              local mutex       = setup_from_state_parameters[index].mutex
-              local log_message = setup_from_state_parameters[index].log_message
-              
-              log(log_message)
-
-              lockAssociativeMutex(mutex)
-              func()
-
-              -- After the mutex is released, increment the index.
-              Wait.condition(
-                function()
-                  index = index + 1
-                end,
-                function() return isAssociativeMutexUnlocked(mutex) end
-              )
-            end,
-            function() return index == setup_index end
-          )
+      if GAME_ID then
+        reconnectToExistingGame()
+      else
+        do -- Temp fill-ins for testing
+          GAME_MASTER_AUTH_TOKEN = "bahms.hguVUkyjJyE5gvlL.J0vYraHLeKc_79FyNyrSOYo8cf1IGqG9RiXXZLCKXaI"
+          _initializeGameConfigUI()
         end
+      end
+
     end,
     1
   )
 
-  else
-    do -- Temp fill-ins for testing
-      GAME_MASTER_AUTH_TOKEN = "bahms.hguVUkyjJyE5gvlL.J0vYraHLeKc_79FyNyrSOYo8cf1IGqG9RiXXZLCKXaI"
-      _initializeGameConfigUI()
-    end
-  end
-
 end
 
 function onUpdate() end
+
+function reconnectToExistingGame()
+  log("\n\n\n=============\nGame ID set: "..GAME_ID.."\n============")
+  -- Don't need the Game Config UI
+  Wait.frames(
+    _hideGameConfigUI,
+    1
+  )
+
+  local ChipManager            = Services.ChipManager
+  local DeckManager            = Services.DeckManager
+  local ServerClientConnection = Services.ServerClientConnection
+
+
+  -- Hacky because _setup is only meant to be called when creating a listener.
+  -- The "GET deck" impl was only meant to be called after a listener has been created.
+  ServerClientConnection.call("_setup", {
+    auth_token = GAME_MASTER_AUTH_TOKEN,
+    game_id    = GAME_ID
+  })
+
+  local DELETE_CHIPS_MUTEX    = "deleting chips"
+  local GATHER_DECK_MUTEX     = "gathering deck"
+  local SORT_DECK_MUTEX       = "sorting deck"
+  local CREATE_LISTENER_MUTEX = "creating listener"
+
+  local setup_from_state_parameters = {
+    {
+      -- Delete chips
+      func        = function()
+        local onFinish_params = {
+          service  = self,
+          callback = "unlockAssociativeMutex",
+          args     = DELETE_CHIPS_MUTEX
+        }
+        ChipManager.call("deleteAllChips", onFinish_params)
+      end,
+      mutex       = DELETE_CHIPS_MUTEX,
+      log_message = "Deleting old chips"
+    },
+    {
+      -- Return cards to deck
+      func        = function()
+        local onFinish_params = {
+          service  = self,
+          callback = "unlockAssociativeMutex",
+          args     = GATHER_DECK_MUTEX
+        }
+        local DeckManager = Services.DeckManager
+        DeckManager.call("gatherCards", onFinish_params)
+      end,
+      mutex       = GATHER_DECK_MUTEX,
+      log_message = "return stray cards to deck"
+    },
+    {
+      -- Get deck order and sort deck if necessary
+      func        = function()
+        -- Two steps to sort the deck:
+        --  1. Get the deck order from the server
+        --  2. If the deck order is available, sort the deck
+
+        -- I'll capture the response in a local variable
+        local getDeckOrder_params = {
+          service  = self,
+          callback = "onDeckOrderResponseReceived"
+        }
+        ServerClientConnection.call("getDeckOrder", getDeckOrder_params)
+
+        -- Once that variable is set, we can evaluate if the deck should be sorted.
+        -- If the deck is null (False) then the first hand hasn't started and there is no deck order.
+        Wait.condition(
+          function()
+            local onFinish_params = {
+              service  = self,
+              callback = "unlockAssociativeMutex",
+              args     = SORT_DECK_MUTEX
+            }
+            if DECK_ORDER then
+              -- Ranks and Suits are char values. Have to normalize them to strings.
+              local normalized_deck_order = {}
+              for card in DECK_ORDER do
+                table.insert(normalized_deck_order, string.char(card.rank, card.suit))
+              end
+              -- The deck will be sorted and, when it's done, the mutex will unlock
+              DeckManager.call("setDeckOrder", {
+                deck_order      = normalized_deck_order,
+                onFinish_params = onFinish_params
+              })
+            else
+              -- There's no sorting to do. Proceed
+              unlockAssociativeMutex(SORT_DECK_MUTEX)
+            end
+          end,
+          function() return DECK_ORDER ~= nil end
+        )
+      end,
+      mutex       = SORT_DECK_MUTEX,
+      log_message = "Sorting deck"
+    },
+    {
+      -- The table should be in a base-enough state now to create the listener.
+      -- The first event from creating the listener is a game_status_changed
+      func        = function()
+        local ServerClientConnection = Services.ServerClientConnection
+        ServerClientConnection.call("createEventListener", {
+          game_id    = GAME_ID,
+          auth_token = GAME_MASTER_AUTH_TOKEN
+        })
+      end,
+      mutex       = CREATE_LISTENER_MUTEX,
+      log_message = "creating event listener"
+    }
+  }
+
+  Wait.frames(
+  function()
+    local index = 1
+      for i=1, #setup_from_state_parameters do
+        local setup_index = i
+
+        Wait.condition(
+          function()
+            local func        = setup_from_state_parameters[index].func
+            local mutex       = setup_from_state_parameters[index].mutex
+            local log_message = setup_from_state_parameters[index].log_message
+            
+            log(log_message)
+
+            lockAssociativeMutex(mutex)
+            func()
+
+            -- After the mutex is released, increment the index.
+            Wait.condition(
+              function()
+                index = index + 1
+              end,
+              function() return isAssociativeMutexUnlocked(mutex) end
+            )
+          end,
+          function() return index == setup_index end
+        )
+      end
+  end,
+  1
+)
+end
 
 --[[
   START EVENT OVERRIDES
