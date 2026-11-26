@@ -136,7 +136,6 @@ end
   2. We poll that endpoint with GET requests
 
   params = {
-    server_endpoint = string,
     game_id         = string,
     auth_token      = string
   }
@@ -146,8 +145,6 @@ end
 function createEventListener(params)
   log("Setting up server-client connection")
   _setup(params)
-
-  log(params)
 
   if GAME_ID ~= "0" then -- Debug check. If GAME_ID is 0 then we use playback data
     WebRequest.custom(
@@ -681,7 +678,6 @@ function getDeckOrder(deckOrderReceived_params)
         log("\n"..log_message)
         return
       end
-
 
       local body = JSON.decode(instance.text)
 
