@@ -196,40 +196,42 @@ function setupTable(params)
   -- TODO: The table, hands, etc. should be set based on the game state
   -- TODO: Clear the table and return cards as a first step
   local frame_delay = 5
-  local game_setup_parameters = {
-    {
-      
-      service     = PlayerManager,
-      callback    = "setPlayers",
-      args        = table.players,
-      log_message = "Initializing, seating, and generating chips for players."
-    },
-    {
-      service     = BlindManager,
-      callback    = "configureButtonsFromTable",
-      args        = table,
-      log_message = "Moving blinds and dealer chip."
-    },
-    {
-      service     = DeckManager,
-      callback    = "dealToRound",
-      args        = table.current_round.current_round_type,
-      log_message = "Dealing cards to the correct round."
-    },
-    {
-      service     = ChipManager,
-      callback    = "initializePot",
-      args        = table.pot,
-      log_message = "Initializing the pot."
-    },
-    -- Terminating service call
-    {
-      -- Unlock the mutex
-      service     = onFinish_params.service,
-      callback    = onFinish_params.callback,
-      args        = onFinish_params.args,
-      log_message = "Game state initialized"
-    }
+  local game_setup_parameters = {}
+  game_setup_parameters[#game_setup_parameters+1] = {
+    -- Initialize player chips, stacks, and bets
+    service     = PlayerManager,
+    callback    = "setPlayers",
+    args        = table.players,
+    log_message = "Initializing, seating, and generating chips for players."
+  }
+  game_setup_parameters[#game_setup_parameters+1] = {
+    -- Update the blind chips and position them in front of the correct players
+    service     = BlindManager,
+    callback    = "configureButtonsFromTable",
+    args        = table,
+    log_message = "Moving blinds and dealer chip."
+  }
+  game_setup_parameters[#game_setup_parameters+1] = {
+    -- Deal cards to the current round
+    service     = DeckManager,
+    callback    = "dealToRound",
+    args        = table.current_round.current_round_type,
+    log_message = "Dealing cards to the correct round."
+  }
+  -- TODO: Move cards to reflect player's intent.
+  game_setup_parameters[#game_setup_parameters+1] = {
+    service     = ChipManager,
+    callback    = "initializePot",
+    args        = table.pot,
+    log_message = "Initializing the pot."
+  }
+  -- Terminating service call
+  game_setup_parameters[#game_setup_parameters+1] = {
+    -- Unlock the mutex
+    service     = onFinish_params.service,
+    callback    = onFinish_params.callback,
+    args        = onFinish_params.args,
+    log_message = "Game state initialized"
   }
 
   Wait.frames(
