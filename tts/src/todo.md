@@ -28,6 +28,7 @@ Todo:
 - [-] Add button to reset board to current gamestate (can use the rewind button for now)
   - [ ] Automate resetting the board if a divergence in state is found
 - [ ] Fix players revealing their hand outside of a showdown
+- [ ] on reconnecting to a game, fold player's cards if they are folded
 - [ ] Add a button for the dealer to press that triggers payout after the winning hand(s) is decided
 - [ ] Output hand details in chat upon payout
 - [ ] Check that event IDs from the server are consecutive
